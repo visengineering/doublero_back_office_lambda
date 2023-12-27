@@ -1,0 +1,17 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+echo "[Husky] pre-commit [common-utils]"
+npm run --prefix shared/common-util build:lint:staged
+
+echo "[Husky] pre-commit [common-db]"
+npm run --prefix shared/common-db build:lint:staged
+
+echo "[Husky] pre-commit [utils]"
+npm run --prefix utils build:lint:staged
+
+echo "[Husky] pre-commit [marketing-feeds]"
+npm run --prefix marketing-feeds build:lint:staged
+
+echo "[Husky] pre-commit [product-updater]"
+npm run --prefix product-updater build:lint:staged

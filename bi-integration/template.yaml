@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  BI integration service resources.
+
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+  ApplicationURLName:
+    Type: String
+    MinLength: 2
+    MaxLength: 20
+    AllowedPattern: '^[a-z\-]+$'
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name that can be used in URLs (only lowercase letters and dash, 20 chars max)
+  ServiceUrlName:
+    Type: String
+    Description: Specific service URL name
+    Default: 'bi-integration'
+    AllowedPattern: '^[a-z\-]+$'
+
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  ScheduledJobsNotificationTopic:
+    Type: String
+    MinLength: 5
+    Description: Scheduled Jobs Notification Topic Name
+
+  AlgoliaSecret:
+    Type: String
+    Description: Algolia Access Secret
+
+#  DBEngineVersion:
+#    Type: String
+#    Default: '13.6'
+#  DBParameterGroupFamily:
+#    Type: String
+#    Default: 'aurora-postgresql13'
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-BI-Integration'
+    Description: >-
+      BI Integration module handles using data from BI for analytics and other logic built on top of it.
+
+Conditions:
+  IsProd: !Equals [ !Ref Stage, 'prod' ]
+#  CreateTestResources: !Not [ Condition: IsProd ]
+  UseTracing: !Equals [ !Ref EnableTracing, 'true' ]
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs14.x
+    MemorySize: 128
+    Tracing: !If [ UseTracing, 'Active', 'PassThrough' ]
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Stage
+
+Resources:
+#  !!!! Currently, AWS CloudFormation doesn't support Aurora Serverless v2.
+#
+#  BITestClusterSecret:
+#    Condition: CreateTestResources
+#    Type: AWS::SecretsManager::Secret
+#    Properties:
+#      Name: !Sub '${ServiceUrlName}-bi-test-access-secret'
+#      GenerateSecretString:
+#        SecretStringTemplate: !Sub '{"username": "bi-access-test-user"}'
+#        GenerateStringKey: 'password'
+#        PasswordLength: 25
+#        ExcludeCharacters: '"@/\'
+#  DBClusterParameterGroup:
+#    Type: AWS::RDS::DBClusterParameterGroup
+#    Condition: CreateTestResources
+#    Properties:
+#      Description: !Ref 'AWS::StackName'
+#      Family: !Ref DBParameterGroupFamily
+#      Parameters:
+#        client_encoding: 'UTF8'
+#  BITestCluster:
+#    Type: AWS::RDS::DBCluster
+#    Condition: CreateTestResources
+#    Properties:
+#      DatabaseName: 'elephantstock'
+#      DBClusterParameterGroupName: !Ref DBClusterParameterGroup
+#      EnableHttpEndpoint: true
+#      Engine: 'aurora-postgresql'
+#      EngineMode: 'serverless'
+#      EngineVersion: !Ref DBEngineVersion
+#      MasterUsername: !If
+#        - CreateTestResources
+#        - !Join [ '', [ '{{resolve:secretsmanager:', !Ref BITestClusterSecret, ':SecretString:username}}' ] ]
+#        - !Join [ '', [ '{{resolve:secretsmanager:', !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/bi/access-secret}}', ':SecretString:username}}' ] ]
+#      MasterUserPassword: !If
+#        - CreateTestResources
+#        - !Join [ '', [ '{{resolve:secretsmanager:', !Ref BITestClusterSecret, ':SecretString:password}}' ] ]
+#        - !Join [ '', [ '{{resolve:secretsmanager:', !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/bi/access-secret}}', ':SecretString:password}}' ] ]
+#      ScalingConfiguration:
+#        AutoPause: true
+#      StorageEncrypted: true
+#  DBClusterSecretAttachment:
+#    Type: AWS::SecretsManager::SecretTargetAttachment
+#    Condition: CreateTestResources
+#    Properties:
+#      SecretId: !Ref BITestClusterSecret
+#      TargetId: !Ref BITestCluster
+#      TargetType: 'AWS::RDS::DBCluster'
+
+  UpdateAlgoliaScoresFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-algolia-scores'
+      Description: A function that updates product score/ranking information based on data from BI.
+      Handler: algolia/UpdateAlgoliaScores.handler
+      CodeUri: dist
+      Timeout: 300 # 5 min
+      MemorySize: 256
+      Environment:
+        Variables:
+          BI_DB_ACCESS_SECRET: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/bi/access-secret}}'
+          SKU_PERFORMANCE_DB_VIEW: !If [ IsProd, 'dwh.vw_sku_performance', 'vw_sku_performance' ]
+          ALGOLIA_SECRET: !Ref AlgoliaSecret
+          PRODUCT_INDEX: !If [ IsProd, 'product_catalog', !Sub 'product_catalog_${Stage}' ]
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/bi/access-secret}}'
+                - !Ref AlgoliaSecret
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  UpdateAlgoliaScoresFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UpdateAlgoliaScoresFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+  UpdateAlgoliaScoresFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-update-algolia-scores-schedule-rule'
+      Description: !Sub 'Triggers ${UpdateAlgoliaScoresFunction} on a schedule'
+      ScheduleExpression: 'cron(0 6 * * ? *)' # At 06:00 AM every day
+      State: !If [ IsProd, ENABLED, DISABLED ]
+      Targets:
+        - Arn: !GetAtt UpdateAlgoliaScoresFunction.Arn
+          Id: !Ref UpdateAlgoliaScoresFunction
+  UpdateAlgoliaScoresFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt UpdateAlgoliaScoresFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt UpdateAlgoliaScoresFunctionScheduleRule.Arn

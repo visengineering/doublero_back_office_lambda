@@ -1,0 +1,689 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Marketing Feeds service resources.
+
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+  ApplicationURLName:
+    Type: String
+    MinLength: 2
+    MaxLength: 20
+    AllowedPattern: '^[a-z\-]+$'
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name that can be used in URLs (only lowercase letters and dash, 20 chars max)
+  ServiceUrlName:
+    Type: String
+    Description: Specific service URL name
+    Default: 'marketing-feeds'
+    AllowedPattern: '^[a-z\-]+$'
+
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  DomainName:
+    Type: String
+    MinLength: 5
+    Description: Top-level domain for deployment (e.g. example.com)
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+  CorsOrigin:
+    Type: String
+    Default: '*'
+    MinLength: 1
+    Description: Allowed origin (or several, separated by comma) that should be allowed by CORS (e.g. https://example.com)
+
+  ScheduledJobsNotificationTopic:
+    Type: String
+    MinLength: 5
+    Description: Scheduled Jobs Notification Topic Name
+
+  DBAccessSecret:
+    Type: String
+    Description: Database Access Secret
+  ShoppingFeedSecret:
+    Type: String
+    Description: Shopping Feed Secret
+  ProductFeedSecret:
+    Type: String
+    Description: Product Feed Secret
+  ProductLayoutFeedSecret:
+    Type: String
+    Description: Product Layout Feed Secret
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-Product-Updater'
+    Description: >-
+      Product Updater handles product updates propagation to Shopify, Algolia, shopping feeds, etc.
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, 'prod']
+  UseTracing: !Equals [!Ref EnableTracing, 'true']
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs14.x
+    MemorySize: 128
+    Tracing: !If [UseTracing, 'Active', 'PassThrough']
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Stage
+
+Resources:
+  FeedsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'feeds.${DomainName}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  FeedsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FeedsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Sub '${FeedsBucket.Arn}/*'
+            Principal:
+              CanonicalUser: !GetAtt FeedsCFOriginAccessIdentity.S3CanonicalUserId
+  FeedsCFOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'CloudFront OAI for ${FeedsBucket}'
+
+  FeedsCFDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          Compress: true
+          CachePolicyId: '658327ea-f89d-4fab-a63d-7e88639e58f6' # Managed-CachingOptimized
+          TargetOriginId: !Ref FeedsBucket
+          ViewerProtocolPolicy: 'redirect-to-https'
+          TrustedKeyGroups:
+            - !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-group}}'
+        Enabled: true
+        HttpVersion: 'http2'
+        IPV6Enabled: true
+        Origins:
+          - DomainName: !GetAtt FeedsBucket.DomainName
+            Id: !Ref FeedsBucket
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${FeedsCFOriginAccessIdentity}'
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+  # *******************
+  # Shopping Feed
+  # *******************
+
+  ShoppingFeedGenerateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-generate-shopping-feed'
+      Description: A function that generates shopping feed.
+      Handler: api/shopping/GenerateFeed.handler
+      CodeUri: dist
+      Timeout: 600 # 10 min
+      MemorySize: 2048
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+        - Statement:
+            - Sid: CFAccess
+              Effect: 'Allow'
+              Action:
+                - cloudfront:CreateInvalidation
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FeedsCFDistribution}'
+        - S3WritePolicy:
+            BucketName: !Ref FeedsBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          FEEDS_BUCKET: !Ref FeedsBucket
+          FEEDS_DISTRIBUTION_ID: !Ref FeedsCFDistribution
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  ShoppingFeedGenerateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ShoppingFeedGenerateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+  ShoppingFeedGenerateFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-generate-shopping-feed-schedule-rule'
+      Description: !Sub 'Triggers ${ShoppingFeedGenerateFunction} on a schedule'
+      ScheduleExpression: 'cron(5 0/2 * * ? *)' # at minute :05, every 2 hours, of every day
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ShoppingFeedGenerateFunction.Arn
+          Id: !Ref ShoppingFeedGenerateFunction
+  ShoppingFeedGenerateFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ShoppingFeedGenerateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ShoppingFeedGenerateFunctionScheduleRule.Arn
+
+  ShoppingFeedDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-download-shopping-feed'
+      Description: A function that gives access to a shopping feed for consumers.
+      Handler: api/shopping/DownloadFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref ShoppingFeedSecret
+                - !Ref DBAccessSecret
+                - !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          SHOPPING_FEED_SECRET: !Ref ShoppingFeedSecret
+          CLOUD_FRONT_SIGN_SECRET: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+          FEEDS_DOMAIN: !GetAtt FeedsCFDistribution.DomainName
+  ShoppingFeedDownloadFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ShoppingFeedDownloadFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  ShoppingFeedPopulateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-populate-shopping-feed'
+      Description: A function that populates shopping feed to a DB collection.
+      Handler: api/shopping/PopulateFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  ShoppingFeedPopulateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ShoppingFeedPopulateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  ShoppingFeedGetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-shopping-feed'
+      Description: A function that returns shopping feeds with filters and pagination.
+      Handler: api/shopping/GetFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          CORS_ORIGIN: !Ref CorsOrigin
+  ShoppingFeedGetFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ShoppingFeedGetFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  # *******************
+  # Product Feed
+  # *******************
+
+  ProductFeedGenerateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-generate-product-feed'
+      Description: A function that generates product feed.
+      Handler: api/product/GenerateFeed.handler
+      CodeUri: dist
+      Timeout: 600 # 10 min
+      MemorySize: 2048
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+        - Statement:
+            - Sid: CFAccess
+              Effect: 'Allow'
+              Action:
+                - cloudfront:CreateInvalidation
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FeedsCFDistribution}'
+        - S3WritePolicy:
+            BucketName: !Ref FeedsBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          FEEDS_BUCKET: !Ref FeedsBucket
+          FEEDS_DISTRIBUTION_ID: !Ref FeedsCFDistribution
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  ProductFeedGenerateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductFeedGenerateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+  ProductFeedGenerateFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-generate-product-feed-schedule-rule'
+      Description: !Sub 'Triggers ${ProductFeedGenerateFunction} on a schedule'
+      ScheduleExpression: 'cron(10 0/2 * * ? *)' # at minute :10, every 2 hours, of every day
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ProductFeedGenerateFunction.Arn
+          Id: !Ref ProductFeedGenerateFunction
+  ProductFeedGenerateFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProductFeedGenerateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ProductFeedGenerateFunctionScheduleRule.Arn
+
+  ProductFeedDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-download-product-feed'
+      Description: A function that gives access to a product feed for consumers.
+      Handler: api/product/DownloadFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref ProductFeedSecret
+                - !Ref DBAccessSecret
+                - !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          PRODUCT_FEED_SECRET: !Ref ProductFeedSecret
+          CLOUD_FRONT_SIGN_SECRET: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+          FEEDS_DOMAIN: !GetAtt FeedsCFDistribution.DomainName
+  ProductFeedDownloadFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductFeedDownloadFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  ProductFeedPopulateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-populate-product-feed'
+      Description: A function that populates a product feed.
+      Handler: api/product/PopulateFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  ProductFeedPopulateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductFeedPopulateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  # *******************
+  # Product Layout Feed
+  # *******************
+
+  ProductLayoutFeedGenerateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-generate-product-layout-feed'
+      Description: A function that generates product-layout feed.
+      Handler: api/layout/GenerateFeed.handler
+      CodeUri: dist
+      Timeout: 600 # 10 min
+      MemorySize: 2048
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+        - Statement:
+            - Sid: CFAccess
+              Effect: 'Allow'
+              Action:
+                - cloudfront:CreateInvalidation
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${FeedsCFDistribution}'
+        - S3WritePolicy:
+            BucketName: !Ref FeedsBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          FEEDS_BUCKET: !Ref FeedsBucket
+          FEEDS_DISTRIBUTION_ID: !Ref FeedsCFDistribution
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  ProductLayoutFeedGenerateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductLayoutFeedGenerateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+  ProductLayoutFeedGenerateFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-generate-product-layout-feed-schedule-rule'
+      Description: !Sub 'Triggers ${ProductLayoutFeedGenerateFunction} on a schedule'
+      ScheduleExpression: 'cron(15 0/2 * * ? *)' # at minute :15, every 2 hours, of every day
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ProductLayoutFeedGenerateFunction.Arn
+          Id: !Ref ProductLayoutFeedGenerateFunction
+  ProductLayoutFeedGenerateFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProductLayoutFeedGenerateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ProductLayoutFeedGenerateFunctionScheduleRule.Arn
+
+  ProductLayoutFeedDownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-download-product-layout-feed'
+      Description: A function that gives access to a product-layout feed for consumers.
+      Handler: api/layout/DownloadFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref ProductLayoutFeedSecret
+                - !Ref DBAccessSecret
+                - !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          PRODUCT_LAYOUT_FEED_SECRET: !Ref ProductLayoutFeedSecret
+          CLOUD_FRONT_SIGN_SECRET: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret}}'
+          FEEDS_DOMAIN: !GetAtt FeedsCFDistribution.DomainName
+  ProductLayoutFeedDownloadFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductLayoutFeedDownloadFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  ProductLayoutFeedPopulateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-populate-product-layout-feed'
+      Description: A function that populates product layout feed to a DB collection.
+      Handler: api/layout/PopulateFeed.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  ProductLayoutFeedPopulateFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductLayoutFeedPopulateFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  ProductTypesGetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-product-types'
+      Description: A function that returns product types.
+      Handler: api/product/GetProductTypes.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  ProductTypesGetFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductTypesGetFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  # *******************
+  # Feeds Update Workflow
+  # *******************
+
+  FeedsUpdateWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ServiceUrlName}-feeds-update-workflow'
+      Type: EXPRESS
+      DefinitionUri: workflow/feeds-update.asl.yaml
+      DefinitionSubstitutions:
+        ShoppingFeedPopulateFunction: !Ref ShoppingFeedPopulateFunction
+        ProductFeedPopulateFunction: !Ref ProductFeedPopulateFunction
+        ProductLayoutFeedPopulateFunction: !Ref ProductLayoutFeedPopulateFunction
+      Tracing:
+        Enabled: !If [ UseTracing, true, false ]
+      Policies:
+        - CloudWatchLogsFullAccess
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ShoppingFeedPopulateFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProductFeedPopulateFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProductLayoutFeedPopulateFunction
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt FeedsUpdateWorkflowLogsGroup.Arn
+        IncludeExecutionData: true
+        Level: 'ALL'  # ALL/ERROR/FATAL/OFF
+  FeedsUpdateWorkflowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join [ '/', [ 'workflows', !Sub '${ServiceUrlName}-feeds-update-workflow' ] ]
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  FeedLogsGetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-feed-logs'
+      Description: A function that returns feed logs.
+      Handler: api/logs/GetLogs.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  FeedLogsGetFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FeedLogsGetFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  FeedLogFiltersGetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-feed-log-filters'
+      Description: A function that returns feed log unique titles and names.
+      Handler: api/logs/GetLogFilters.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  FeedLogFiltersGetFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FeedLogFiltersGetFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+Outputs:
+  ShoppingFeedDownloadFunction:
+    Description: Download Shopping Feed Function ARN
+    Value: !GetAtt ShoppingFeedDownloadFunction.Arn
+  ShoppingFeedGetFunction:
+    Description: Get shopping feeds with filters and pagination
+    Value: !GetAtt ShoppingFeedGetFunction.Arn
+
+  FeedLogsGetFunction:
+    Description: Get Feed Logs Function ARN
+    Value: !GetAtt FeedLogsGetFunction.Arn
+  FeedLogFiltersGetFunction:
+    Description: Get Feed Log Names And Titles Function ARN
+    Value: !GetAtt FeedLogFiltersGetFunction.Arn
+  
+  ShoppingFeedPopulateFunction:
+    Description: Get Shopping Feed Populate Function ARN
+    Value: !GetAtt ShoppingFeedPopulateFunction.Arn
+
+  ProductFeedPopulateFunction:
+    Description: Populate Product Feed Function ARN
+    Value: !GetAtt ProductFeedPopulateFunction.Arn
+
+  ProductFeedDownloadFunction:
+    Description: Download Product Feed Function ARN
+    Value: !GetAtt ProductFeedDownloadFunction.Arn
+  ProductTypesGetFunction:
+    Description: Get Product Types Function ARN
+    Value: !GetAtt ProductTypesGetFunction.Arn
+
+  ProductLayoutFeedDownloadFunction:
+    Description: Get Product layout Feed Function ARN
+    Value: !GetAtt ProductLayoutFeedDownloadFunction.Arn
+  ProductLayoutFeedPopulateFunction:
+    Description: Populate Product Layout Feed Function ARN
+    Value: !GetAtt ProductLayoutFeedPopulateFunction.Arn
+
+  FeedsUpdateWorkflow:
+    Description: Feeds Update Workflow Name
+    Value: !GetAtt FeedsUpdateWorkflow.Name

@@ -1,0 +1,38 @@
+{
+  "name": "customer-reviews",
+  "version": "1.0.0",
+  "description": "Customer reviews management application",
+  "main": "index.js",
+  "scripts": {
+    "build": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:dist",
+    "build:ci": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:dist && npm run build:dist:shared",
+    "build:shared": "rm -rf .shared && npm run build:shared:common-util && npm run build:shared:common-db",
+    "build:shared:common-util": "mkdir -p .shared/common-util && cp -R ../shared/common-util/dist/* .shared/common-util/",
+    "build:shared:common-db": "mkdir -p .shared/common-db && cp -R ../shared/common-db/dist/* .shared/common-db/",
+    "build:init": "npm run build:shared && rm -rf dist && mkdir -p dist && npm install",
+    "build:tsc": "tsc",
+    "build:lint": "eslint . --ext .ts",
+    "build:copy": "cp -a package.json package-lock.json .shared dist/",
+    "build:dist": "npm run build:copy && cd dist && npm install --only=prod && rm -v package-lock.json",
+    "build:dist:shared-cleanup": "rm -rf dist/.shared && npm run build:shared && cp -a .shared dist/",
+    "build:dist:shared": "npm run build:dist:shared-cleanup && cd dist/.shared && ls -d */ | xargs -I {} bash -c 'echo ../node_modules/{}' | sed 's/\\///3' | xargs rm -rfv $1 && mv * ../node_modules && cd .. && rm -rf .shared"
+  },
+  "devDependencies": {
+    "common-db": "file:./.shared/common-db",
+    "common-util": "file:./.shared/common-util",
+    "@types/node": "^14.14.31",
+    "@typescript-eslint/eslint-plugin": "5.1.0",
+    "@typescript-eslint/parser": "5.1.0",
+    "@types/jest": "^27.0.3",
+    "eslint": "8.0.1",
+    "jest": "^27.3.1",
+    "mongodb": "4.2.0",
+    "typescript": "4.4.4"
+  },
+  "author": "Yuriy Dizhak",
+  "repository": {
+    "url": "https://github.com/double-ro/back-office-jobs.git",
+    "directory": "customer-reviews"
+  },
+  "license": "ISC"
+}

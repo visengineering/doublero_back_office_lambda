@@ -1,0 +1,49 @@
+{
+  "name": "common-util",
+  "version": "1.0.0",
+  "description": "Common Utils module",
+  "scripts": {
+    "build": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:dist",
+    "build:ci": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:dist:ci",
+    "build:init": "rm -rf dist && mkdir dist && npm install",
+    "build:tsc": "tsc",
+    "build:lint": "eslint . --ext .ts",
+    "build:lint:staged": "lint-staged",
+    "build:copy": "cp -va package.json package-lock.json dist",
+    "build:dist:ci": "npm run build:copy && cd dist && npm install --production && rm -v package-lock.json",
+    "build:dist": "npm run build:copy && cd dist && npm install && rm -v package-lock.json"
+  },
+  "dependencies": {
+    "joi": "17.5.0",
+    "latinize": "0.5.0",
+    "uuid": "8.3.2",
+    "@types/aws-lambda": "8.10.84",
+    "aws-sdk": "2.1014.0"
+  },
+  "devDependencies": {
+    "@types/latinize": "^0.2.15",
+    "@types/node": "14.14.31",
+    "@types/uuid": "8.3.1",
+    "@typescript-eslint/eslint-plugin": "5.2.0",
+    "@typescript-eslint/parser": "5.2.0",
+    "eslint": "8.1.0",
+    "lint-staged": "12.1.2",
+    "typescript": "4.4.4"
+  },
+  "engines": {
+    "npm": ">=8.5.0",
+    "node": ">=14.17.2"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "npm run build:lint"
+    ]
+  },
+  "keywords": [],
+  "author": "Yuriy Dizhak",
+  "repository": {
+    "url": "https://github.com/double-ro/back-office-jobs.git",
+    "directory": "shared/common-util"
+  },
+  "license": "ISC"
+}

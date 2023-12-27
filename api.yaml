@@ -1,0 +1,1776 @@
+openapi: 3.0.3
+
+info:
+  title:
+    Fn::Sub: ${ApplicationName} REST API (${Stage})'
+  description:
+    Fn::Sub: ${ApplicationName} project responsible for Cron jobs and async actions execution, etc.
+  version: 1.0.0
+
+# Enable request validator. See doc: https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-request-validation-sample-api-swagger.html
+x-amazon-apigateway-request-validators:
+  all:
+    validateRequestBody: true
+    validateRequestParameters: true
+x-amazon-apigateway-request-validator: all
+
+x-amazon-apigateway-gateway-responses:
+  # Provide more detailed error message for bad request body errors. See doc: https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-swagger-extensions-gateway-responses.html
+  # https://docs.aws.amazon.com/apigateway/api-reference/resource/gateway-response/
+  ACCESS_DENIED:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  AUTHORIZER_FAILURE:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  EXPIRED_TOKEN:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  INVALID_SIGNATURE:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  MISSING_AUTHENTICATION_TOKEN:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  UNAUTHORIZED:
+    responseTemplates:
+      application/json: '{"error": {"code": "AccessDenied", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  RESOURCE_NOT_FOUND:
+    responseTemplates:
+      application/json: '{"error": {"code": "NotFound", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  BAD_REQUEST_BODY:
+    responseTemplates:
+      application/json: '{"error": {"code": "BadRequest", "message": "$context.error.validationErrorString"}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  BAD_REQUEST_PARAMETERS:
+    responseTemplates:
+      application/json: '{"error": {"code": "BadRequest", "message": "$context.error.validationErrorString"}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  UNSUPPORTED_MEDIA_TYPE:
+    responseTemplates:
+      application/json: '{"error": {"code": "BadRequest", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  DEFAULT_4XX:
+    responseTemplates:
+      application/json: '{"error": {"code": "ApiGeneral", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  DEFAULT_5XX:
+    responseTemplates:
+      application/json: '{"error": {"code": "ServerError", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+  THROTTLED:
+    responseTemplates:
+      application/json: '{"error": {"code": "TooManyRequests", "message": $context.error.messageString}}'
+    responseParameters:
+      gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+
+servers:
+  - url:
+      Fn::Sub: 'https://${ApiSubdomain}${DomainName}'
+    description:
+      Fn::Sub: '${Stage} Server'
+
+tags:
+  - name: artist
+    description: Artists updates management resources
+  - name: product
+    description: Product management resources
+  - name: products-update
+    description: Product updates management resources
+  - name: feeds
+    description: Marketing feeds management resources
+
+paths:
+  /products/{sku}/updates:
+    post:
+      summary: List products
+      description: Schedules product updates (with specified categories) distribution
+      operationId: products-list
+      tags:
+        - products-update
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ProductSKU'
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: x-service-auth
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductUpdateEvent'
+      responses:
+        202:
+          description: 'Successfully added product update event to the queue'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - serviceAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [ ApiGatewayStepFunctionsRole, Arn ]
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:states:action/StartExecution
+        httpMethod: POST
+        type: aws
+        responses:
+          default:
+            statusCode: 202
+          '.*CREATION_FAILED.*':
+            statusCode: 403
+            responseTemplates:
+              application/json: $input.path('$.errorMessage')
+        requestTemplates:
+          application/json:
+            Fn::Sub: |-
+              #set($data = $input.path('$'))
+              #if($data.skip_shopify_update == '') #set($skip_shopify_update = false) #else #set($skip_shopify_update = $data.skip_shopify_update) #end
+              #if($data.attempt == '') #set($attempt = 0) #else #set($attempt = $data.attempt) #end
+              #if($data.batch_id == '') #set($batch_id = '') #else #set($batch_id = $data.batch_id) #end
+              #if($data.action == '') #set($action = '') #else #set($action = $data.action) #end
+              #if($data.shopify_id == '') #set($shopify_id = '') #else #set($shopify_id = $data.shopify_id) #end
+
+              {
+                "input": "{\"sku\": \"$method.request.path.sku\", \"types\": {#foreach($type in $data.types.keySet())#if($foreach.index > 0),#end \"$type\": $util.escapeJavaScript($data.types.get($type))#end }, \"skip_shopify_update\": $skip_shopify_update, \"batch_id\": \"$batch_id\", \"action\": \"$action\", \"shopify_id\": \"$shopify_id\", \"attempt\": $attempt}",
+                "name": "$context.requestId",
+                "stateMachineArn": "${ProductUpdaterService.Outputs.ProductUpdatesWorkflow}"
+              }
+
+  /artists/updates:
+    post:
+      summary: Update artist index data
+      description: Updates artist index data
+      operationId: artist-data-update
+      tags:
+        - artist
+      parameters:
+        - name: x-service-auth
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 'Successfully updated artists data'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - serviceAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductUpdaterService.Outputs.UpdateArtistDataFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.header.x-service-auth: method.request.header.x-service-auth
+
+  /feeds/shopping:
+    get:
+      summary: Get shopping feed download URL
+      description: Returns URL to a pre-generated shopping feed
+      operationId: download-shopping-feed
+      tags:
+        - feeds
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CallerName'
+        - name: key
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/APIKey'
+      responses:
+        303:
+          description: 'Verified API key and redirected to feed location'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ShoppingFeedDownloadFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.name: method.request.querystring.name
+          integration.request.querystring.key: method.request.querystring.key
+        responseParameters:
+          method.response.header.Location: integration.response.header.Location
+
+  /feeds/shopping/preview:
+    options:
+      summary: CORS support
+      tags:
+        - feeds
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get shopping feed preview
+      description: Returns filtered shopping feed preview
+      operationId: get-shopping-feed-preview
+      tags:
+        - feeds
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PageNumber'
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PageSize'
+        - name: sales_label
+          in: query
+          required: false
+          schema:
+            title: 'Custom label 3'
+            type: integer
+            minimum: 0
+            maximum: 5
+        - name: product_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ProductType'
+        - name: query
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SearchQuery'
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+            minLength: 0
+            maxLength: 200
+      responses:
+        200:
+          description: 'Successfully got shopping feeds'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShoppingFeeds'
+        400:
+          description: 'Bad Request'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ShoppingFeedGetFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.sales_label: method.request.querystring.sales_label
+          integration.request.querystring.product_type: method.request.querystring.product_type
+          integration.request.querystring.query: method.request.querystring.query
+          integration.request.querystring.page: method.request.querystring.page
+          integration.request.querystring.page_size: method.request.querystring.page_size
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+  /feeds/shopping/{sku}/populate:
+    post:
+      summary: Populate shopping feed for a product
+      description: Populates shopping feed for a product
+      operationId: populate-shopping-feed
+      tags:
+        - feeds
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ProductSKU'
+      responses:
+        200:
+          description: 'Successfully populated feed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - serviceAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ShoppingFeedPopulateFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.path.sku: method.request.path.sku
+
+  /feeds/product:
+    get:
+      summary: Get product feed download URL
+      description: Returns URL to a pre-generated product feed
+      operationId: download-product-feed
+      tags:
+        - feeds
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CallerName'
+        - name: referer
+          in: header
+          required: false
+          schema:
+            $ref: '#/components/schemas/CallerName'
+        - name: key
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/APIKey'
+      responses:
+        303:
+          description: 'Verified API key and redirected to feed location'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ProductFeedDownloadFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.name: method.request.querystring.name
+          integration.request.querystring.key: method.request.querystring.key
+          integration.request.header.referer: method.request.header.referer
+        responseParameters:
+          method.response.header.Location: integration.response.header.Location
+
+  /feeds/logs:
+    options:
+      summary: CORS support
+      tags:
+        - feeds
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get feed logs
+      description: Returns feed logs data
+      operationId: get-feed-logs
+      tags:
+        - feeds
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            title: 'Page size'
+            description: 'Limit of items per page'
+            type: number
+            minimum: 1
+            maximum: 200
+        - name: page
+          in: query
+          required: false
+          schema:
+            title: 'Page'
+            description: 'Page number'
+            type: number
+            minimum: 1
+            maximum: 2000
+        - name: name
+          in: query
+          required: false
+          schema:
+            title: 'Log Name'
+            description: 'Feed log name to find'
+            type: string
+            minLength: 1
+            maxLength: 200
+        - name: title
+          in: query
+          required: false
+          schema:
+            title: 'Log title'
+            description: 'Feed log title'
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        200:
+          description: 'Paginated feed logs'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedLogs'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.FeedLogsGetFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.page_size: method.request.querystring.page_size
+          integration.request.querystring.page: method.request.querystring.page
+          integration.request.querystring.name: method.request.querystring.name
+          integration.request.querystring.title: method.request.querystring.title
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+  /feeds/logs/filters:
+    options:
+      summary: CORS support
+      tags:
+        - feeds
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get feed log filters
+      description: Returns feed logs filter options
+      operationId: get-feed-log-filters
+      tags:
+        - feeds
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        200:
+          description: 'Feed log filters'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedLogFilters'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.FeedLogFiltersGetFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+  /feeds/product/{sku}/populate:
+    post:
+      summary: Populate product feed
+      description: Populates product feed
+      operationId: populate-product-feed
+      tags:
+        - feeds
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ProductSKU'
+      responses:
+        200:
+          description: 'Successfully populated feed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - serviceAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ProductFeedPopulateFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.path.sku: method.request.path.sku
+
+  /feeds/product-layout:
+    get:
+      summary: Get product-layout feed download URL
+      description: Returns URL to a pre-generated product-layout feed
+      operationId: download-product-layout-feed
+      tags:
+        - feeds
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/CallerName'
+        - name: key
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/APIKey'
+      responses:
+        303:
+          description: 'Verified API key and redirected to feed location'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ProductLayoutFeedDownloadFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.name: method.request.querystring.name
+          integration.request.querystring.key: method.request.querystring.key
+        responseParameters:
+          method.response.header.Location: integration.response.header.Location
+
+  /feeds/product-layout/{sku}/populate:
+    post:
+      summary: Populate product-layout feed for a product
+      description: Populates product-layout feed for a product
+      operationId: populate-product-layout-feed
+      tags:
+        - feeds
+      parameters:
+        - name: sku
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ProductSKU'
+      responses:
+        200:
+          description: 'Successfully populated feed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - serviceAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ProductLayoutFeedPopulateFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.path.sku: method.request.path.sku
+
+  /products/types:
+    options:
+      summary: CORS support
+      tags:
+        - product
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get product types
+      description: Returns product types
+      operationId: get-product-types
+      tags:
+        - product
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        200:
+          description: 'Product types'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProductType'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MarketingFeedsService.Outputs.ProductTypesGetFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+  /customer-reviews/products/reviews:
+    options:
+      summary: CORS support
+      tags:
+        - customer-reviews
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get product reviews with stats.
+      description: Returns product reviews with statistics via filters and pagination.
+      operationId: get-product-reviews-with-stats
+      tags:
+        - customer-reviews
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            title: 'Page size'
+            description: 'Limit of items per page'
+            type: number
+            minimum: 1
+            maximum: 200
+        - name: page
+          in: query
+          required: false
+          schema:
+            title: 'Page'
+            description: 'Page number'
+            type: number
+            minimum: 1
+            maximum: 2000
+        - name: sort
+          in: query
+          required: false
+          schema:
+            title: 'Sort'
+            description: 'Sort product reviews by parameter'
+            type: string
+            minLength: 4
+            maxLength: 32
+        - name: product_type
+          in: query
+          required: false
+          schema:
+            title: 'Product type'
+            type: string
+            enum:
+              - 'artist'
+              - 'stock_photo'
+            minLength: 1
+            maxLength: 30
+        - name: query
+          in: query
+          required: false
+          schema:
+            title: 'Search parameter'
+            description: 'Search by SKU or Product name'
+            type: string
+            minLength: 1
+            maxLength: 200
+        - name: source
+          in: query
+          required: false
+          schema:
+            title: 'Source'
+            description: 'Product review source'
+            type: string
+            enum:
+              - 'reviews_io'
+            minLength: 1
+            maxLength: 20
+      responses:
+        200:
+          description: 'Customer product reviews with stats'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductReviewsWithStats'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerReviewsService.Outputs.ProductReviewsGetWithStatsFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.page_size: method.request.querystring.page_size
+          integration.request.querystring.page: method.request.querystring.page
+          integration.request.querystring.sort: method.request.querystring.sort
+          integration.request.querystring.product_type: method.request.querystring.product_type
+          integration.request.querystring.query: method.request.querystring.query
+          integration.request.querystring.source: method.request.querystring.source
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+  /customer-reviews/products/{sku}/reviews:
+    options:
+      summary: CORS support
+      tags:
+        - customer-reviews
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get product reviews by sku.
+      description: Returns product reviews by sku with sorting and pagination.
+      operationId: get-product-reviews-by-sku
+      tags:
+        - customer-reviews
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            title: 'Page size'
+            description: 'Limit of items per page'
+            type: number
+            minimum: 1
+            maximum: 200
+        - name: page
+          in: query
+          required: false
+          schema:
+            title: 'Page'
+            description: 'Page number'
+            type: number
+            minimum: 1
+            maximum: 2000
+        - name: sort
+          in: query
+          required: false
+          schema:
+            title: 'Sort'
+            description: 'Sort product reviews by parameter'
+            type: string
+            minLength: 4
+            maxLength: 32
+        - name: sku
+          in: path
+          required: true
+          schema:
+            title: 'Search parameter'
+            description: 'Search by SKU or Product name'
+            type: string
+            minLength: 1
+            maxLength: 20
+      responses:
+        200:
+          description: 'Customer product reviews by sku'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductReviewsBySku'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerReviewsService.Outputs.ProductReviewsGetBySkuFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.querystring.page_size: method.request.querystring.page_size
+          integration.request.querystring.page: method.request.querystring.page
+          integration.request.querystring.sort: method.request.querystring.sort
+          integration.request.path.sku: method.request.path.sku
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+  /customer-reviews/products/configs:
+    options:
+      summary: CORS support
+      tags:
+        - customer-reviews
+      responses:
+        200:
+          description: Default response for CORS method
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+          content: { }
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: |
+            {"statusCode" : 200}
+        responses:
+          default:
+            statusCode: 200
+            responseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,x-service-auth'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            responseTemplates:
+              application/json: '{}'
+      x-amazon-apigateway-auth: NONE
+    get:
+      summary: Get product review configs.
+      description: Returns product review configs.
+      operationId: get-product-review-configs
+      tags:
+        - customer-reviews
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        200:
+          description: 'Customer product review configs'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductReviewConfigs'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerReviewsService.Outputs.ProductReviewConfigsGetFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+    post:
+      summary: Update product review configs.
+      description: Update product review configs.
+      operationId: update-product-review-configs
+      tags:
+        - customer-reviews
+      parameters:
+        - name: origin
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: Product review configs body
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductReviewConfigs'
+      responses:
+        200:
+          description: 'Successfully updated product review configs data'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Empty'
+        401:
+          description: 'Unauthorized Exception'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Internal Server Error'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      security:
+        - cognitoAuthorizer: [ ]
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerReviewsService.Outputs.ProductReviewConfigsUpdateFunction}/invocations
+        httpMethod: POST
+        type: aws_proxy
+        passthroughBehavior: never
+        requestParameters:
+          integration.request.header.origin: method.request.header.origin
+        responseParameters:
+          method.response.header.Access-Control-Allow-Origin: integration.response.header.Access-Control-Allow-Origin
+
+components:
+  securitySchemes:
+    cognitoAuthorizer:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: cognito_user_pools
+      x-amazon-apigateway-authorizer:
+        providerARNs:
+          - Fn::Sub: '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/config/auth/CognitoPoolArn}}'
+        type: cognito_user_pools
+    serviceAuthorizer:
+      type: apiKey
+      name: x-service-auth
+      in: header
+      x-amazon-apigateway-authtype: custom
+      x-amazon-apigateway-authorizer:
+        type: request
+        identitySource: method.request.header.x-service-auth
+        authorizerUri:
+          Fn::Sub: 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ServiceAuthorizerFunction}/invocations'
+        authorizerResultTtlInSeconds: 10
+  schemas:
+    Error:
+      type: object
+      title: 'Error'
+      description: 'Error Details'
+      properties:
+        code:
+          type: string
+          title: 'Code'
+          description: 'Error internal code'
+        message:
+          type: string
+          title: 'Message'
+          description: 'Error message'
+
+    Empty:
+      title: 'Empty Response'
+      description: 'Default OK response'
+
+    PageNumber:
+      title: 'Page number'
+      description: 'Page number fot the pagination'
+      type: integer
+      minimum: 0
+    PageSize:
+      title: 'Page Size'
+      description: 'Page size fot the pagination'
+      type: integer
+      minimum: 0
+      maximum: 200
+    SearchQuery:
+      title: 'Query'
+      description: 'Filter for search'
+      type: string
+      minLength: 1
+      maxLength: 200
+
+    CallerName:
+      title: 'Caller Identifier'
+      description: 'Identifies who is calling the API'
+      type: string
+      minLength: 1
+      maxLength: 32
+    APIKey:
+      title: 'API Key'
+      description: 'API Key information'
+      type: string
+      minLength: 10
+      maxLength: 64
+
+    ProductSKU:
+      title: 'SKU'
+      description: 'Product SKU'
+      type: string
+      minLength: 1
+      maxLength: 16
+    ProductType:
+      title: 'Type'
+      description: 'Product Type'
+      type: string
+      minLength: 1
+      maxLength: 128
+
+    ProductUpdateEvent:
+      title: 'Product Update Event'
+      type: object
+      required:
+        - types
+      properties:
+        skip_shopify_update:
+          title: 'Skip Shopify Update'
+          type: boolean
+          default: false
+        batch_id:
+          title: 'Bulk update batch id'
+          type: string
+          default: ''
+          maxLength: 64
+        attempt:
+          title: 'Re-try attempt'
+          type: number
+          default: 0
+          minimum: 0
+        types:
+          title: 'Update Types'
+          type: object
+          additionalProperties:
+            type: array
+            minItems: 0
+            items:
+              type: string
+
+    FeedLogs:
+      type: array
+      items:
+        type: object
+        description: 'Feed log object'
+        required: [ 'date', 'name', 'items', 'success', 'url' ]
+        properties:
+          date:
+            type: string
+            format: date-time
+            example: 2018-11-21T02:19:34.995+00:00
+          name:
+            type: string
+          items:
+            type: number
+          success:
+            type: boolean
+          url:
+            type: string
+          execution_time:
+            type: string
+          error:
+            type: object
+            required: [ 'name' ]
+            properties:
+              name:
+                type: string
+              stack:
+                type: string
+              message:
+                type: string
+
+    FeedLogFilters:
+      type: object
+      description: 'Feed log filters'
+      properties:
+        titles:
+          type: array
+          items:
+            type: string
+        names:
+          type: array
+          items:
+            type: string
+    ShoppingFeeds:
+      type: array
+      title: Shopping Feed Items
+      items:
+        type: object
+        required:
+          - id
+          - original_id
+          - sku
+          - link
+        properties:
+          original_id:
+            title: 'Original Id'
+            description: 'Id of the original product'
+            type: string
+            minLength: 1
+            maxLength: 20
+          id:
+            title: 'Id'
+            description: 'Id of the original product'
+            type: string
+            minLength: 1
+            maxLength: 20
+          item_group_id:
+            title: 'Item Group Id'
+            type: string
+            minLength: 1
+            maxLength: 20
+          color:
+            title: 'Color'
+            description: 'Product color from Cloudinary'
+            type: string
+            minLength: 1
+            maxLength: 30
+          condition:
+            title: 'Condition'
+            description: 'Product Condition'
+            type: string
+            minLength: 1
+            maxLength: 3
+          brand:
+            title: 'Brand'
+            description: 'Product brand'
+            type: string
+            minLength: 1
+            maxLength: 30
+          link:
+            title: 'URL'
+            description: 'Product / variant URL'
+            type: string
+            minLength: 1
+            maxLength: 2048
+          title:
+            title: 'Title'
+            description: 'Product title'
+            type: string
+            minLength: 1
+            maxLength: 150
+          display_ads_title:
+            title: 'Display Ads title'
+            description: 'Title for displaying in the ads'
+            type: string
+            minLength: 1
+            maxLength: 100
+          size:
+            title: 'Size'
+            description: 'Product / variant size'
+            type: string
+            minLength: 1
+            maxLength: 10
+          sku:
+            title: 'SKU'
+            description: 'Product SKU'
+            type: string
+            minLength: 1
+            maxLength: 20
+          mpn:
+            title: 'mpn'
+            description: 'Product SKU'
+            type: string
+            minLength: 1
+            maxLength: 20
+          image_link:
+            title: 'Image URL'
+            description: 'Product image URL'
+            type: string
+            minLength: 1
+            maxLength: 2048
+          price:
+            title: Price
+            description: 'Product full price'
+            type: string
+            minLength: 1
+            maxLength: 20
+          sale_price:
+            title: 'Sale Price'
+            description: 'Product price after discount'
+            type: string
+            minLength: 1
+            maxLength: 20
+          description:
+            title: 'Description'
+            description: 'Product / variant description'
+            type: string
+            minLength: 1
+            maxLength: 200
+          product_type:
+            title: 'Product Type'
+            description: 'Product type'
+            type: string
+            minLength: 1
+            maxLength: 100
+          custom_label_0:
+            title: 'Custom Label 0'
+            description: 'Product status'
+            type: string
+            minLength: 1
+            maxLength: 10
+          custom_label_1:
+            title: 'Custom Label 1'
+            description: 'Product collection'
+            type: string
+            minLength: 1
+            maxLength: 20
+          custom_label_2:
+            title: 'Custom Label 2'
+            type: string
+            minLength: 1
+            maxLength: 20
+          custom_label_3:
+            title: 'Custom Label 3'
+            description: 'sales label'
+            type: integer
+            minimum: 0
+            maximum: 5
+          custom_label_4:
+            title: 'Custom Label 4'
+            description: 'Product origin state'
+            type: string
+            enum: [ 'Product', 'Variant' ]
+          shipping_weight:
+            title: 'Shipping Weight'
+            description: 'Product shipping weight'
+            type: string
+            minLength: 1
+            maxLength: 10
+          availability:
+            title: 'Availability'
+            description: 'Product availability'
+            type: string
+            minLength: 1
+            maxLength: 20
+          google_product_category:
+            title: 'Google Product Category'
+            type: string
+            minLength: 1
+            maxLength: 100
+          artist:
+            title: 'Artist'
+            description: 'Product artist name'
+            type: string
+            minLength: 1
+            maxLength: 100
+          pieces:
+            title: 'Pieces'
+            description: 'Product pieces'
+            type: string
+            minLength: 1
+            maxLength: 100
+          last_updated:
+            title: 'Last Updated'
+            description: 'Product feed last updated date'
+            type: string
+            format: date-time
+            minLength: 1
+            maxLength: 40
+          styles:
+            title: 'Styles'
+            description: 'Product style category'
+            type: string
+            minLength: 1
+            maxLength: 20
+          shape:
+            title: 'Shape'
+            description: 'Product shape'
+            type: string
+            minLength: 1
+            maxLength: 20
+          rooms:
+            title: 'Rooms'
+            description: 'Product room type'
+            type: string
+            minLength: 1
+            maxLength: 20
+
+    ProductReviewsWithStats:
+      type: array
+      title: 'Product reviews with stats'
+      description: 'Product reviews with statistics'
+      items:
+        type: object
+        properties:
+          SKU:
+            type: number
+          avgAllTime:
+            type: object
+            description: 'Average stats for the product for all time'
+            properties:
+              RatingAverage:
+                type: number
+              ReviewsCount:
+                type: number
+          avgLast7Days:
+            type: object
+            description: 'Average stats for the product for the last seven days'
+            properties:
+              RatingAverage:
+                type: number
+              ReviewsCount:
+                type: number
+          Author:
+            type: string
+          Date:
+            type: string
+            format: date-time
+            example: 2020-10-25T12:33:43.000+00:00
+          Comments:
+            type: string
+          HumanDate:
+            type: number
+          Images:
+            type: array
+            items:
+              type: object
+              properties:
+                date_created:
+                  type: string
+                  example: '2020-10-25 12:33:39'
+                id:
+                  type: number
+                image:
+                  type: string
+                product_review_id:
+                  type: number
+                status:
+                  type: string
+          OrderID:
+            type: number
+          Product:
+            type: number
+          ProductName:
+            type: number
+          ProductReviewId:
+            type: number
+          Rating:
+            type: number
+          reviewsCount:
+            type: number
+          SourceProvider:
+            type: number
+
+    ProductReviewsBySku:
+      type: array
+      title: 'Product reviews with stats'
+      description: 'Product reviews with statistics'
+      items:
+        type: object
+        properties:
+          SKU:
+            type: number
+          Author:
+            type: string
+          Comments:
+            type: string
+          Date:
+            type: string
+            format: date-time
+            example: 2020-10-25T12:33:43.000+00:00
+          HumanDate:
+            type: number
+          Images:
+            type: array
+            items:
+              type: object
+              properties:
+                date_created:
+                  type: string
+                  example: '2020-10-25 12:33:39'
+                id:
+                  type: number
+                image:
+                  type: string
+                product_review_id:
+                  type: number
+                status:
+                  type: string
+          OrderID:
+            type: number
+          Product:
+            type: number
+          ProductName:
+            type: number
+          ProductReviewId:
+            type: number
+          reviewsCount:
+            type: number
+          Rating:
+            type: number
+          SourceProvider:
+            type: number
+
+    ProductReviewConfigs:
+      type: array
+      description: 'Product review configs'
+      items:
+        type: object
+        properties:
+          Name:
+            type: string
+            enum:
+              - 'accurate_and_undamaged_orders'
+              - 'bad_words'
+              - 'customer_service'
+              - 'on_time_delivery'
+              - 'product_reviews_stars'
+              - 'skus_to_remove'
+              - 'warning_avg_last_7_days_rating'
+              - 'warning_stars_last_7_days'
+          Value:
+            oneOf:
+              - type: string
+                minLength: 1
+                maxLength: 32
+              - type: array
+                items:
+                  type: string
+                  minLength: 1
+                  maxLength: 32
+        required:
+          - Name
+          - Value

@@ -1,0 +1,2 @@
+# ignoring js files generated for tests
+**/*.js

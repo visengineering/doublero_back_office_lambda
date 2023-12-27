@@ -1,0 +1,666 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Product Updater service resources.
+
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+  ServiceUrlName:
+    Type: String
+    Description: Specific service URL name
+    Default: 'product-updater'
+    AllowedPattern: '^[a-z\-]+$'
+
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+
+  NotificationEmail:
+    Description: Email address for SNS notifications on updates
+    Type: String
+    AllowedPattern: ([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)
+    ConstraintDescription: Must be a valid email address
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  ScheduledJobsNotificationTopic:
+    Type: String
+    MinLength: 5
+    Description: Scheduled Jobs Notification Topic Name
+
+  DBAccessSecret:
+    Type: String
+    Description: Database Access Secret
+  AlgoliaSecret:
+    Type: String
+    Description: Algolia Access Secret
+  ShopifySecret:
+    Type: String
+    Description: Shopify Access Secret
+  ShopifyWorkersCount:
+    Type: Number
+    MinValue: 1
+    MaxValue: 100
+    Default: 10
+    Description: The max number of parallel executors for Shopify updater
+
+  FeedsUpdateWorkflow:
+    Type: String
+    MinLength: 10
+    Description: Feeds Update Workflow Name
+
+  ContentBucket:
+    Type: String
+    MinLength: 2
+    Description: Content Bucket to hold user specific content
+  ContentCDN:
+    Type: String
+    MinLength: 2
+    Description: Content CDN domain
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-Product-Updater'
+    Description: >-
+      Product Updater handles product updates propagation to Shopify, Algolia, shopping feeds, etc.
+
+Conditions:
+  IsProd: !Equals [ !Ref Stage, 'prod' ]
+  UseTracing: !Equals [ !Ref EnableTracing, 'true' ]
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs14.x
+    MemorySize: 128
+    Tracing: !If [ UseTracing, 'Active', 'PassThrough' ]
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Stage
+
+Resources:
+  ProductUpdatesWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub '${ServiceUrlName}-workflow'
+      Type: STANDARD
+      DefinitionUri: workflow/product-updater.asl.yaml
+      DefinitionSubstitutions:
+        NotificationTopic: !Ref ProductUpdatesNotificationTopic
+        ShopifyUpdatesQueue: !Ref ShopifyUpdatesQueue
+        LoadProductUpdatesFunction: !Ref LoadProductUpdatesFunction
+        UploadProductImagesFunction: !Ref UploadProductImagesFunction
+        UpdateShopifyAsyncFunction: !Ref UpdateShopifyAsyncFunction
+        UpdateAlgoliaFunction: !Ref UpdateAlgoliaFunction
+        UpdateProductImagesFunction: !Ref UpdateProductsImagesFunction
+        ProductUpdatesTable: !Ref ProductUpdatesTable
+        FeedsUpdateWorkflow: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${FeedsUpdateWorkflow}'
+      Tracing:
+        Enabled: !If [ UseTracing, true, false ]
+      Policies:
+        - CloudWatchLogsFullAccess
+        - Statement:
+          - Sid: SubWorkflowStartPermission
+            Effect: 'Allow'
+            Action:
+              - events:PutTargets
+              - events:PutRule
+              - events:DescribeRule
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule'
+        - Statement:
+          - Sid: SubWorkflowManagePermission
+            Effect: 'Allow'
+            Action:
+              - states:DescribeExecution
+              - states:StopExecution
+            Resource: '*'
+        - LambdaInvokePolicy:
+            FunctionName: !Ref LoadProductUpdatesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UploadProductImagesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateShopifyAsyncFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateAlgoliaFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref UpdateProductsImagesFunction
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyUpdatesQueue.QueueName
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt ProductUpdatesNotificationTopic.TopicName
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !Ref FeedsUpdateWorkflow
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProductUpdatesTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref ProductUpdatesTable
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt ProductUpdatesWorkflowLogsGroup.Arn
+        IncludeExecutionData: true
+        Level: 'ALL'  # ALL/ERROR/FATAL/OFF
+  ProductUpdatesWorkflowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join [ '/', [ 'workflows', !Sub '${ServiceUrlName}-workflow' ] ]
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  LoadProductUpdatesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-load-product-updates'
+      Description: A function that returns products details based on update type.
+      Handler: api/product/LoadProductUpdates.handler
+      CodeUri: dist
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+                - !Ref ShopifySecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          SHOPIFY_SECRET: !Ref ShopifySecret
+          CDN_BUCKET: !Ref ContentBucket
+          CDN_URL: !Ref ContentCDN
+  LoadProductUpdatesFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LoadProductUpdatesFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+  UploadProductImagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-upload-product-images'
+      Description: A function that handled uploading product images
+      Handler: api/product/UploadProductImages.handler
+      CodeUri: dist
+      Timeout: 120
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref ContentBucket
+        - Statement:
+            - Sid: S3TaggingAccess
+              Effect: 'Allow'
+              Action:
+                - s3:PutObjectTagging
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:s3:::${ContentBucket}/*'
+  UploadProductImagesFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UploadProductImagesFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+  UpdateProductsImagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-product-images'
+      Description: A function that saves references to uploaded images into DB.
+      Handler: api/product/UpdateProductImages.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  UpdateProductsImagesFunctionGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UpdateProductsImagesFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  ProductUpdatesNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ServiceUrlName}-${Stage}-updates'
+      DisplayName: !Sub 'Product Update Events'
+      Subscription:
+        - Endpoint:
+            Ref: NotificationEmail
+          Protocol: email
+        - Endpoint:
+            !Sub
+            - 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${NOTIFICATION_HANDLER}'
+            - NOTIFICATION_HANDLER: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/handler-function}}'
+          Protocol: lambda
+  ProductUpdatesChatNotificationsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/handler-function}}'
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref ProductUpdatesNotificationTopic
+
+  ShopifyUpdatesDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: !If [ IsProd, 345600, 86400 ]  # 4 days, 1 day
+      VisibilityTimeout: 60  # 1 min
+      QueueName: 'shopify-updates-dlq.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+  ShopifyUpdatesQueueHighLoadAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref ProductUpdatesNotificationTopic
+      AlarmName: 'ShopifyUpdatesQueue-HighLoad'
+      AlarmDescription: 'Alarm if queue depth grows beyond a threshold'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ShopifyUpdatesQueue.QueueName
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      Period: 600 # 10 min
+      Statistic: Sum
+      Threshold: !If [ IsProd, 1000, 50 ]
+      TreatMissingData: notBreaching
+  ShopifyUpdatesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: !If [ IsProd, 345600, 86400 ]  # 4 days, 1 day
+      VisibilityTimeout: 180  # 3 min, should be at least 6 times the timeout of handling function.
+      QueueName: 'shopify-updates.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ShopifyUpdatesDLQ.Arn
+        maxReceiveCount: 6  # should be at least 5
+
+  UpdateShopifyAsyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-shopify-async'
+      Description: A function that handles async updates to Shopify.
+      Handler: api/product/UpdateShopifyAsync.handler
+      CodeUri: dist
+      Timeout: 30
+      ReservedConcurrentExecutions: !Ref ShopifyWorkersCount
+      Policies:
+        - Statement:
+            - Sid: SQSAccess
+              Effect: 'Allow'
+              Action:
+                - sqs:DeleteMessage
+              Resource:
+                - !GetAtt ShopifyUpdatesQueue.Arn
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref ShopifySecret
+                - !Ref DBAccessSecret
+        - Statement:
+            - Sid: WorkflowAccess
+              Effect: 'Allow'
+              Action:
+                - states:SendTaskSuccess
+                - states:SendTaskFailure
+              Resource:
+                - '*'
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ShopifyUpdatesQueue.Arn
+            BatchSize: 1
+      Environment:
+        Variables:
+          SHOPIFY_UPDATES_QUEUE: !Ref ShopifyUpdatesQueue
+          SHOPIFY_SECRET: !Ref ShopifySecret
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  UpdateShopifyAsyncFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UpdateShopifyAsyncFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  HandleShopifyUpdateDlqFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-handle-shopify-update-dlq'
+      Description: A function that handles messages in Shopify update DLQ.
+      Handler: api/product-error/HandleShopifyUpdateDlq.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SQSAccess
+              Effect: 'Allow'
+              Action:
+                - sqs:DeleteMessage
+              Resource:
+                - !GetAtt ShopifyUpdatesDLQ.Arn
+        - Statement:
+            - Sid: WorkflowAccess
+              Effect: 'Allow'
+              Action:
+                - states:SendTaskFailure
+              Resource:
+                - '*'
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ShopifyUpdatesDLQ.Arn
+            BatchSize: 5
+      Environment:
+        Variables:
+          SHOPIFY_UPDATES_DLQ: !Ref ShopifyUpdatesDLQ
+  HandleShopifyUpdateDlqFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${HandleShopifyUpdateDlqFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  UpdateAlgoliaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-algolia'
+      Description: A function that handles product updates to Algolia.
+      Handler: api/product/UpdateAlgolia.handler
+      CodeUri: dist
+      ReservedConcurrentExecutions: 100
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref AlgoliaSecret
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          ALGOLIA_SECRET: !Ref AlgoliaSecret
+          PRODUCT_INDEX: !If [ IsProd, 'product_catalog', !Sub 'product_catalog_${Stage}' ]
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+  UpdateAlgoliaFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UpdateAlgoliaFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  UpdateArtistDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-artist-data'
+      Description: A function that handles artists data update and propagation to Algolia.
+      Handler: api/artist/UpdateArtistData.handler
+      CodeUri: dist
+      Timeout: 600
+      MemorySize: 2048
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+                - !Ref AlgoliaSecret
+                - !Ref ShopifySecret
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+          ALGOLIA_SECRET: !Ref AlgoliaSecret
+          SHOPIFY_SECRET: !Ref ShopifySecret
+          ARTIST_INDEX: !If [ IsProd, 'artists', !Sub 'artists_${Stage}' ]
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  UpdateArtistDataFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${UpdateArtistDataFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+  UpdateArtistDataFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-update-artist-data-schedule-rule'
+      Description: !Sub 'Triggers ${UpdateArtistDataFunction} on a schedule'
+      ScheduleExpression: 'cron(0 6 * * ? *)' # At 06:00 AM every day
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt UpdateArtistDataFunction.Arn
+          Id: !Ref UpdateArtistDataFunction
+  UpdateArtistDataFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt UpdateArtistDataFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt UpdateArtistDataFunctionScheduleRule.Arn
+
+  ProductUpdatesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'ProductUpdates'
+      BillingMode: 'PAY_PER_REQUEST'
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: 'id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'id'
+          KeyType: 'HASH'
+      SSESpecification:
+        SSEEnabled: true
+
+  HandleUpdateRetryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-handle-update-retry'
+      Description: A function that handles re-try attempts for failed Product Update executions.
+      Handler: api/product-error/HandleUpdateRetry.handler
+      CodeUri: dist
+      Timeout: 20
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProductUpdatesTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt ProductUpdatesWorkflow.Name
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ScheduledJobsNotificationTopic
+      Environment:
+        Variables:
+          PRODUCT_UPDATES_TABLE: !Ref ProductUpdatesTable
+          PRODUCT_UPDATES_WORKFLOW_ARN: !Ref ProductUpdatesWorkflow
+      DeadLetterQueue:
+        Type: SNS
+        TargetArn: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ScheduledJobsNotificationTopic}'
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  HandleUpdateRetryFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${HandleUpdateRetryFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+  HandleUpdateRetryFunctionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ServiceUrlName}-handle-update-retry-schedule-rule'
+      Description: !Sub 'Triggers ${HandleUpdateRetryFunction} on a schedule'
+      ScheduleExpression: 'rate(1 hour)' # once per hour
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt HandleUpdateRetryFunction.Arn
+          Id: !Ref HandleUpdateRetryFunction
+  HandleUpdateRetryFunctionTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HandleUpdateRetryFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HandleUpdateRetryFunctionScheduleRule.Arn
+
+  # Product updates scheduler
+
+  ScheduledUpdatesDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: !If [ IsProd, 345600, 86400 ]  # 4 days, 1 day
+      VisibilityTimeout: 30
+      QueueName: 'product-scheduled-updates-dlq.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      DeduplicationScope: messageGroup
+  ScheduledUpdatesQueueHighLoadAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref ProductUpdatesNotificationTopic
+      AlarmName: 'ScheduledUpdatesQueue-HighLoad'
+      AlarmDescription: 'Alarm if queue depth grows beyond a threshold'
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ScheduledUpdatesQueue.QueueName
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      Period: 300 # 5 min
+      Statistic: Sum
+      Threshold: !If [ IsProd, 5000, 50 ]
+      TreatMissingData: notBreaching
+  ScheduledUpdatesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: !If [ IsProd, 345600, 86400 ]  # 4 days, 1 day
+      VisibilityTimeout: 60  # 1 min, should be at least 6 times the timeout of handling function.
+      QueueName: 'product-scheduled-updates.fifo'
+      FifoQueue: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ScheduledUpdatesDLQ.Arn
+        maxReceiveCount: 6  # should be at least +1 to consumers count
+
+  HandleScheduleUpdateDlqFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-handle-schedule-update-dlq'
+      Description: A function that handles messages in Schedule update DLQ.
+      Handler: api/scheduler/HandleScheduleUpdateDlq.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SQSAccess
+              Effect: 'Allow'
+              Action:
+                - sqs:DeleteMessage
+              Resource:
+                - !GetAtt ScheduledUpdatesDLQ.Arn
+        - DynamoDBWritePolicy:
+            TableName: !Ref ProductUpdatesTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ScheduledUpdatesDLQ.Arn
+            BatchSize: 5
+      Environment:
+        Variables:
+          SCHEDULED_UPDATES_DLQ: !Ref ScheduledUpdatesDLQ
+          PRODUCT_UPDATES_TABLE: !Ref ProductUpdatesTable
+  HandleScheduleUpdateDlqFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${HandleScheduleUpdateDlqFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  HandleScheduleUpdateAsyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-schedule-product-update-async'
+      Description: A function that handles async product updates scheduling.
+      Handler: api/scheduler/ScheduleUpdateAsync.handler
+      CodeUri: dist
+      ReservedConcurrentExecutions: 5
+      Policies:
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt ProductUpdatesWorkflow.Name
+        - SNSPublishMessagePolicy:
+            TopicName: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic}}'
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ScheduledUpdatesQueue.Arn
+            BatchSize: 5
+      Environment:
+        Variables:
+          SCHEDULED_UPDATES_QUEUE: !Ref ScheduledUpdatesQueue
+          PRODUCT_UPDATES_WORKFLOW_ARN: !Ref ProductUpdatesWorkflow
+          WAIT_TIME_DELAY: 1000
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        DestinationConfig:
+          OnFailure:
+            Type: SNS
+            Destination: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+  HandleScheduleUpdateAsyncFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${HandleScheduleUpdateAsyncFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+Outputs:
+  ProductUpdatesWorkflow:
+    Description: Product Updates Handler Workflow
+    Value: !GetAtt ProductUpdatesWorkflow.Arn
+
+  UpdateArtistDataFunction:
+    Description: Update Artist Data Function ARN
+    Value: !GetAtt UpdateArtistDataFunction.Arn

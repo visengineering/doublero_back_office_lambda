@@ -1,0 +1,26 @@
+### Get customer product reviews with statistic, filters, sorting and pagination
+# sort: <sort_field_1>,<direction>|<sort_field_2>,<direction>|…|<sort_field_n>,<direction>
+# sort_fields: review_age| rating (default review_age,-1)
+# product_type: artist | stock_photo
+# query: sku or productName
+# source: 'reviews_io'
+GET {{host}}/customer-reviews/products/reviews?product_type=<product_type>&query=<search_string>&page=<page_number>&page_size=<page_size>&sort=<sort>
+x-service-auth: {{bo-auth}}
+
+### Get customer product reviews by sku sorted by Date DESC
+#sort: <sort_field_1>,<direction>|<sort_field_2>,<direction>|…|<sort_field_n>,<direction>
+#sort_fields: review_age| rating (default review_age,-1)
+GET {{host}}/customer-reviews/products/<sku>/reviews
+x-service-auth: {{bo-auth}}
+
+### Get customer product reviews configs
+GET {{host}}/customer-reviews/products/configs
+x-service-auth: {{bo-auth}}
+
+### Update customer product reviews configs
+POST {{host}}/customer-reviews/products/configs
+x-service-auth: {{bo-auth}}
+Content-Type: application/json
+
+[{"Name": "bad_words", "Value": "Value"}]
+

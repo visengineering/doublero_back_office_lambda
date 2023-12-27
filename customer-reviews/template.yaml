@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Customer Reviews service.
+
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+
+  ServiceUrlName:
+    Type: String
+    Description: Specific service URL name
+    Default: 'customer-reviews'
+    AllowedPattern: '^[a-z\-]+$'
+
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  CorsOrigin:
+    Type: String
+    Default: '*'
+    MinLength: 1
+    Description: Allowed origin (or several, separated by comma) that should be allowed by CORS (e.g. https://example.com)
+
+  DBAccessSecret:
+    Type: String
+    Description: Database Access Secret
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-Customer-Reviews'
+    Description: >-
+      Customer Reviews service handles customer reviews operations
+
+Conditions:
+  IsProd: !Equals [ !Ref Stage, 'prod' ]
+  UseTracing: !Equals [ !Ref EnableTracing, 'true' ]
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs14.x
+    MemorySize: 128
+    Tracing: !If [ UseTracing, 'Active', 'PassThrough' ]
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Stage
+        CORS_ORIGIN: !Ref CorsOrigin
+
+Resources:
+  ProductReviewsGetWithStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-product-reviews-with-stats'
+      Description: A function that returns product reviews with statistics via filters and pagination.
+      Handler: api/product/GetProductReviewsWithStats.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+
+  ProductReviewsGetWithStatsFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductReviewsGetWithStatsFunction}'
+
+  ProductReviewsGetBySkuFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-product-reviews-by-sku'
+      Description: A function that returns product reviews with sorting by date and pagination.
+      Handler: api/product/GetReviewsBySku.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+
+  ProductReviewsGetBySkuFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductReviewsGetBySkuFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  ProductReviewConfigsGetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-get-product-review-configs'
+      Description: A function that returns product review configs
+      Handler: api/config/GetReviewConfigs.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+
+  ProductReviewConfigsGetFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductReviewConfigsGetFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+  ProductReviewConfigsUpdateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ServiceUrlName}-update-product-review-configs'
+      Description: A function that sets product review configs
+      Handler: api/config/UpdateReviewConfigs.handler
+      CodeUri: dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DBAccessSecret
+      Environment:
+        Variables:
+          DB_ACCESS_SECRET: !Ref DBAccessSecret
+
+  ProductReviewConfigsUpdateFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProductReviewConfigsUpdateFunction}'
+      RetentionInDays: !If [ IsProd, 14, 7 ]
+
+
+Outputs:
+  ProductReviewsGetWithStatsFunction:
+    Description: Get Product Reviews With Stats Function ARN
+    Value: !GetAtt ProductReviewsGetWithStatsFunction.Arn
+
+  ProductReviewsGetBySkuFunction:
+    Description: Get Product Reviews By Sku Function ARN
+    Value: !GetAtt ProductReviewsGetBySkuFunction.Arn
+
+  ProductReviewConfigsGetFunction:
+    Description: Get Product Review Configs Function ARN
+    Value: !GetAtt ProductReviewConfigsGetFunction.Arn
+
+  ProductReviewConfigsUpdateFunction:
+    Description: Product Review Update Configs Function ARN
+    Value: !GetAtt ProductReviewConfigsUpdateFunction.Arn

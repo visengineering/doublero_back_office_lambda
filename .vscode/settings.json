@@ -1,0 +1,4 @@
+{
+  "ts.implicitProjectConfig.experimentalDecorators": true,
+  "js.implicitProjectConfig.experimentalDecorators": true
+}

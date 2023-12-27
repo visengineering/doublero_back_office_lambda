@@ -1,0 +1,5 @@
+### Get product types
+
+GET {{host}}/products/types
+x-service-auth: {{bo-auth}}
+

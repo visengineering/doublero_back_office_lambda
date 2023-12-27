@@ -1,0 +1,45 @@
+# Shopping Feed
+
+### Download shopping feed
+
+GET {{host}}/feeds/shopping?key={{shopping_feed_key}}&name=test-call
+
+### Populate shopping feed for product
+
+POST {{host}}/feeds/shopping/<sku>/populate
+x-service-auth: {{bo-auth}}
+
+### Get shopping feed for product
+
+GET {{host}}/feeds/shopping/preview?query=&product_type=&sales_label=sdsd&page=&page_size=
+x-service-auth: {{bo-auth}}
+
+
+# Product Feed
+
+### Download product feed
+
+GET {{host}}/feeds/product?key={{product_feed_key}}&name=test-call
+
+### Populate product feed for product
+
+POST {{host}}/feeds/product/<sku>/populate
+x-service-auth: {{bo-auth}}
+
+# Product Layout Feed
+
+### Download product-layout feed
+
+GET {{host}}/feeds/product-layout?key={{product_layout_feed_key}}&name=test-call
+
+### Populate product-layout feed for product
+
+POST {{host}}/feeds/product-layout/<sku>/populate
+x-service-auth: {{bo-auth}}
+
+### Get feed logs
+GET {{host}}/feeds/logs?name=test-call
+x-service-auth: {{bo-auth}}
+### Get feed log filters
+GET {{host}}/feeds/logs/filters
+x-service-auth: {{bo-auth}}

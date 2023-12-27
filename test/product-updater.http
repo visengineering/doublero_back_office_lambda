@@ -1,0 +1,13 @@
+POST {{host}}/products/<sku>/updates
+Content-Type: application/json
+x-service-auth: {{bo-auth}}
+
+{
+    "types": {
+        "categorization": [],
+        "previews": []
+    },
+    "skip_shopify_update": false
+}
+
+###

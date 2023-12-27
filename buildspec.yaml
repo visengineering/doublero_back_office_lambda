@@ -1,0 +1,86 @@
+version: 0.2
+
+env:
+  git-credential-helper: yes
+  variables:
+    CHANGELOG_ARTIFACT: 'ChangeLog'
+    CHANGELOG_ARTIFACT_FILE: 'changelog'
+    REVISION_FILE: 'revision/branch'
+  exported-variables:
+    - CHANGELOG_ARTIFACT
+    - CHANGELOG_ARTIFACT_FILE
+    - REVISION_FILE
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+      nodejs: 14
+    commands:
+      - pip install cfn-lint
+      - npm install -g npm@8
+  pre_build:
+    commands:
+      - echo Validating templates
+
+      - cfn-lint --ignore-checks=W3002 template.yaml
+      - cfn-lint --ignore-checks=W3002 product-updater/template.yaml
+      - cfn-lint --ignore-checks=W3002 marketing-feeds/template.yaml
+      - cfn-lint --ignore-checks=W3002 customer-reviews/template.yaml
+      - cfn-lint --ignore-checks=W3002 bi-integration/template.yaml
+  build:
+    commands:
+      - echo Building Shared Util
+      - cd shared/common-util
+      - npm run build:ci
+      - echo Building Shared DB
+      - cd ../common-db
+      - npm run build:ci
+      - cd ../common-services
+      - npm run build:ci
+      - cd ../..  # getting back to project root
+
+      - echo Building Utils
+      - cd utils
+      - npm run build:ci
+      - cd ..  # getting back to project root
+
+      - echo Building Product Updater Service
+      - cd product-updater
+      - npm run build:ci
+      - cd ..  # getting back to project root
+
+      - echo Building Marketing Feeds Service
+      - cd marketing-feeds
+      - npm run build:ci
+      - cd ..  # getting back to project root
+
+      - echo Building Customer Reviews Service
+      - cd customer-reviews
+      - npm run build:ci
+      - cd ..  # getting back to project root
+
+      - echo Building BI Integration Service
+      - cd bi-integration
+      - npm run build:ci
+      - cd ..  # getting back to project root
+      -
+      - echo Building Template
+      - sam package --s3-bucket ${PACKAGE_BUCKET} --template-file template.yaml --output-template-file packaged-template.yaml
+      - printf '{"Tags":{"environment":"%s"}}' $BUILD_PROFILE > template-config.json
+
+      - REVISION_FILE_DIR=revision/${BUILD_SERVICE_NAME}
+      - REVISION_FILE=${REVISION_FILE_DIR}/${BUILD_BRANCH}
+      - echo Reading last revision from ${REVISION_FILE} file in ${PACKAGE_BUCKET} bucket
+      - mkdir -p ${REVISION_FILE_DIR} && revision_file_exists=$(aws s3api head-object --bucket ${PACKAGE_BUCKET} --key ${REVISION_FILE} || true)
+      - if [ -z "$revision_file_exists" ]; then touch ${REVISION_FILE}; else aws s3api get-object --bucket ${PACKAGE_BUCKET} --key ${REVISION_FILE} ${REVISION_FILE}; fi
+      - LAST_REVISION=`cat ${REVISION_FILE}`
+      - if [ -z "$LAST_REVISION" ]; then git log --pretty=oneline --no-merges -100 > changelog; else git log ${LAST_REVISION}..HEAD --pretty=oneline --no-merges > changelog; fi
+artifacts:
+  secondary-artifacts:
+    BuildArtifact:
+      files:
+        - packaged-template.yaml
+        - template-config.json
+    ChangeLog:
+      files:
+        - changelog

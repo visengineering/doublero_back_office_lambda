@@ -1,0 +1,517 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+  ApplicationURLName:
+    Type: String
+    MinLength: 2
+    MaxLength: 20
+    AllowedPattern: '^[a-z\-]+$'
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name that can be used in URLs (only lowercase letters and dash, 20 chars max)
+
+  DomainName:
+    Type: String
+    MinLength: 5
+    Description: Top-level domain for deployment (e.g. example.com)
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+  ApiSubdomain:
+    Type: String
+    Description: Api subdomain prefix (e.g. api.)
+    Default: 'product-api.'
+  HostedZoneId:
+    Description: An Amazon Route 53 hosted zone ID (e.g. Z23YXV4OVPL04A)
+    Type: AWS::Route53::HostedZone::Id
+
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+
+  NotificationEmail:
+    Description: Email address for SNS notifications on updates
+    Type: String
+    AllowedPattern: ([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)
+    ConstraintDescription: Must be a valid email address
+
+  DBAccessURL:
+    Type: String
+    Description: Service DB access URL
+    NoEcho: true
+    MinLength: 10
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  AlgoliaAppId:
+    Type: String
+    Description: Application ID is what Algolia uses to identify your app, where all your indices live
+    MinLength: 10
+    MaxLength: 10
+    AllowedPattern: '^[a-zA-Z0-9]+$'
+  AlgoliaApiKey:
+    Type: String
+    Description: Algolia Admin key to interract with application
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+
+  ShopifyShopName:
+    Type: String
+    Description: Shopify shop name
+    MinLength: 2
+    MaxLength: 32
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ShopifyApiKey:
+    Type: String
+    Description: Shopify API key
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ShopifyApiPassword:
+    Type: String
+    Description: Shopify API password
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-_]+$'
+  ShopifyWorkersCount:
+    Type: Number
+    MinValue: 1
+    MaxValue: 100
+    Default: 10
+    Description: The max number of parallel executors for Shopify updater
+
+  ShoppingFeedApiKey:
+    Type: String
+    Description: Shopping Feed API key
+    NoEcho: true
+    MinLength: 20
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ProductFeedApiKey:
+    Type: String
+    Description: Product Feed API key
+    NoEcho: true
+    MinLength: 20
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-Application'
+    Description: >-
+      BackOffice Jobs project responsible for Cron jobs and async actions execution, etc.
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, 'prod']
+  UseTracing: !Equals [!Ref EnableTracing, 'true']
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs14.x
+    MemorySize: 128
+    Tracing: !If [UseTracing, 'Active', 'PassThrough']
+
+Resources:
+  ServiceApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ApplicationName}-API'
+      # Use DefinitionBody for swagger file so that we can use CloudFormation intrinsic functions within the swagger file
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: 'api.yaml'
+      MinimumCompressionSize: 100000
+      StageName: !Ref Stage
+      TracingEnabled: !If [UseTracing, true, false]
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          # Disable data trace in production to avoid logging customer sensitive information from requests and responses
+          DataTraceEnabled: !If [IsProd, false, true]
+          LoggingLevel: 'OFF' # OFF, ERROR, and INFO
+          MetricsEnabled: false
+          ThrottlingRateLimit: 100
+          ThrottlingBurstLimit: 200
+      #      AccessLogSetting:
+      #        DestinationArn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApiAccessLogGroup}'
+      #        Format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLatency":$context.responseLatency,"xrayTraceId":"$context.xrayTraceId","integrationRequestId":"$context.integration.requestId","functionResponseStatus":"$context.integration.status","integrationLatency":"$context.integration.latency","integrationServiceStatus":"$context.integration.integrationStatus","authorizeStatus":"$context.authorize.status","authorizerStatus":"$context.authorizer.status","authorizerLatency":"$context.authorizer.latency","authorizerRequestId":"$context.authorizer.requestId","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent","principalId":"$context.authorizer.principalId"}'
+      OpenApiVersion: '3.0.3'
+      Domain:
+        CertificateArn: !Sub '{{resolve:ssm:/applications/ssl/${AWS::Region}/${DomainName}}}'
+        DomainName: !Sub '${ApiSubdomain}${DomainName}'
+        EndpointConfiguration: REGIONAL
+        Route53:
+          HostedZoneId: !Ref HostedZoneId
+      EndpointConfiguration:
+        Type: REGIONAL
+
+  ApiGatewayPushToCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: 'Push logs to CloudWatch logs from API Gateway'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'apigateway.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+  ApiAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayPushToCloudWatchRole.Arn
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/AccessLog-${ServiceApi}'
+      RetentionInDays: !If [IsProd, 30, 7]
+  ApiExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub 'API-Gateway-Execution-Logs_${ServiceApi}/${Stage}'
+      RetentionInDays: !If [IsProd, 14, 7]
+
+  # *******************
+  # Authorizers
+  # *******************
+
+  ServiceAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${ApplicationURLName}-service-authorizer'
+      Description: A function that handles service authorization.
+      Handler: api/ServiceAuthorizer.handler
+      CodeUri: utils/dist
+      Policies:
+        - Statement:
+            - Sid: SecretsAccess
+              Effect: 'Allow'
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref BOServiceSecret
+      Environment:
+        Variables:
+          BO_SERVICE_SECRET: !Ref BOServiceSecret
+  ServiceAuthorizerFunctionLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ServiceAuthorizerFunction}'
+      RetentionInDays: !If [IsProd, 14, 7]
+  ServiceAuthorizerFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ServiceAuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/authorizers/*'
+
+  # *******************
+  # Secrets
+  # *******************
+
+  BOServiceSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-bo-service-secret'
+      GenerateSecretString:
+        SecretStringTemplate: '{"user": "service-back-office"}'
+        GenerateStringKey: 'pass'
+        ExcludeCharacters: ':'
+        PasswordLength: 32
+
+  DBAccessSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-db-access-secret'
+      SecretString: !Sub '{"url": "${DBAccessURL}"}'
+
+  AlgoliaSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-algolia-secret'
+      SecretString: !Sub '{"app_id": "${AlgoliaAppId}", "api_key": "${AlgoliaApiKey}"}'
+  ShopifySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-shopify-secret'
+      SecretString: !Sub '{"shop_name": "${ShopifyShopName}", "api_key": "${ShopifyApiKey}", "api_pass": "${ShopifyApiPassword}"}'
+  ShoppingFeedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-shopping-feed-secret'
+      SecretString: !Sub '{"api_key": "${ShoppingFeedApiKey}"}'
+  ProductFeedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-product-feed-secret'
+      SecretString: !Sub '{"api_key": "${ProductFeedApiKey}"}'
+  ProductLayoutFeedSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-product-layout-feed-secret'
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: 'api_key'
+        PasswordLength: 30
+        ExcludePunctuation: true
+        IncludeSpace: false
+
+  # *******************
+  # Jobs Notifications
+  # *******************
+
+  ScheduledJobsNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ApplicationURLName}-${Stage}-jobs-fail-updates'
+      DisplayName: !Sub '${Stage}: Scheduled Job Failed'
+      Subscription:
+        - Endpoint:
+            Ref: NotificationEmail
+          Protocol: email
+
+  # *******************
+  # Product Updater Service
+  # *******************
+
+  ProductUpdaterService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: 'product-updater/template.yaml'
+      Parameters:
+        ApplicationName: !Ref ApplicationName
+        ServiceUrlName: 'product-updater'
+        Stage: !Ref Stage
+        NotificationEmail: !Ref NotificationEmail
+        EnableTracing: !Ref EnableTracing
+        DBAccessSecret: !Ref DBAccessSecret
+        AlgoliaSecret: !Ref AlgoliaSecret
+        ShopifySecret: !Ref ShopifySecret
+        ShopifyWorkersCount: !Ref ShopifyWorkersCount
+        ScheduledJobsNotificationTopic: !GetAtt ScheduledJobsNotificationTopic.TopicName
+        FeedsUpdateWorkflow: !GetAtt MarketingFeedsService.Outputs.FeedsUpdateWorkflow
+        ContentBucket: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/config/env/ContentBucket}}'
+        ContentCDN: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/config/env/ContentCDN}}'
+
+
+  ApiGatewayStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: !Join ['', ['/', !Ref 'AWS::StackName', '/']]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowApiGatewayServiceToAssumeRole
+            Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+      Policies:
+        - PolicyName: CallStepFunctions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource:
+                  - !GetAtt ProductUpdaterService.Outputs.ProductUpdatesWorkflow
+
+  UpdateArtistDataFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ProductUpdaterService.Outputs.UpdateArtistDataFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  # *******************
+  # Marketing Feeds Service
+  # *******************
+
+  MarketingFeedsService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: 'marketing-feeds/template.yaml'
+      Parameters:
+        ApplicationName: !Ref ApplicationName
+        ApplicationURLName: !Ref ApplicationURLName
+        ServiceUrlName: 'marketing-feeds'
+        Stage: !Ref Stage
+        EnableTracing: !Ref EnableTracing
+        DomainName: !Ref DomainName
+        CorsOrigin: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/config/env/CorsOrigin}}'
+        DBAccessSecret: !Ref DBAccessSecret
+        ShoppingFeedSecret: !Ref ShoppingFeedSecret
+        ProductFeedSecret: !Ref ProductFeedSecret
+        ProductLayoutFeedSecret: !Ref ProductLayoutFeedSecret
+        ScheduledJobsNotificationTopic: !GetAtt ScheduledJobsNotificationTopic.TopicName
+
+  ShoppingFeedDownloadFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ShoppingFeedDownloadFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+  ShoppingFeedGetFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ShoppingFeedGetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+  ShoppingFeedPopulateFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ShoppingFeedPopulateFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  FeedLogsGetFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.FeedLogsGetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  FeedLogFiltersGetFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.FeedLogFiltersGetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  ProductFeedDownloadFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ProductFeedDownloadFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+  ProductLayoutFeedDownloadFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ProductLayoutFeedDownloadFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+  ProductFeedPopulateFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ProductFeedPopulateFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+  ProductLayoutFeedPopulateFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ProductLayoutFeedPopulateFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  ProductTypesGetFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MarketingFeedsService.Outputs.ProductTypesGetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  # *******************
+  # Customer Reviews Service
+  # *******************
+
+  CustomerReviewsService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: 'customer-reviews/template.yaml'
+      Parameters:
+        ApplicationName: !Ref ApplicationName
+        ServiceUrlName: 'customer-reviews'
+        Stage: !Ref Stage
+        EnableTracing: !Ref EnableTracing
+        CorsOrigin: !Sub '{{resolve:ssm:/applications/${ApplicationURLName}/${AWS::Region}/config/env/CorsOrigin}}'
+        DBAccessSecret: !Ref DBAccessSecret
+
+  ProductReviewsGetWithStatsFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CustomerReviewsService.Outputs.ProductReviewsGetWithStatsFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  ProductReviewsGetBySkuFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CustomerReviewsService.Outputs.ProductReviewsGetBySkuFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  ProductReviewConfigsGetFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CustomerReviewsService.Outputs.ProductReviewConfigsGetFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  ProductReviewConfigsUpdateFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CustomerReviewsService.Outputs.ProductReviewConfigsUpdateFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ServiceApi}/*/*/*'
+
+  # *******************
+  # BI Integration Service
+  # *******************
+
+  BIIntegrationService:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: 'bi-integration/template.yaml'
+      Parameters:
+        ApplicationName: !Ref ApplicationName
+        ApplicationURLName: !Ref ApplicationURLName
+        ServiceUrlName: 'bi-integration'
+        Stage: !Ref Stage
+        EnableTracing: !Ref EnableTracing
+        ScheduledJobsNotificationTopic: !GetAtt ScheduledJobsNotificationTopic.TopicName
+        AlgoliaSecret: !Ref AlgoliaSecret
+Outputs:
+  ApiUrl:
+    Description: 'Service URL'
+    Value: !Sub 'https://${ApiSubdomain}${DomainName}'

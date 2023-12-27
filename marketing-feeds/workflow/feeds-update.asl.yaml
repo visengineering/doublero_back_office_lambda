@@ -1,0 +1,130 @@
+Comment: Marketing feeds updates handling workflow
+StartAt: Update Feeds
+States:
+  Update Feeds:
+    Type: Parallel
+    End: true
+    Branches:
+      - StartAt: Populate Shopping Feed
+        States:
+          Populate Shopping Feed:
+            Comment: Populate shopping feed for specific product
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ShoppingFeedPopulateFunction}
+              Payload:
+                pathParameters:
+                  sku.$: $.sku
+                  action.$: $.action
+                headers:
+                  errors_aware: 'true'
+            Retry:
+              - ErrorEquals:
+                  - ApiCall
+                  - ApiGeneral
+                IntervalSeconds: 3
+                BackoffRate: 5
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Communication
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Server
+                  - Lambda.Unknown
+                  - Lambda.ServiceException
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Lambda.TooManyRequestsException
+                IntervalSeconds: 5
+                BackoffRate: 20
+                MaxAttempts: 10
+            ResultPath: $.shopping_feed
+            TimeoutSeconds: 10
+            End: true
+      - StartAt: Populate Product Feed
+        States:
+          Populate Product Feed:
+            Comment: Populate product feed for specific product
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ProductFeedPopulateFunction}
+              Payload:
+                pathParameters:
+                  sku.$: $.sku
+                  action.$: $.action
+                headers:
+                  errors_aware: 'true'
+            Retry:
+              - ErrorEquals:
+                  - ApiCall
+                  - ApiGeneral
+                IntervalSeconds: 3
+                BackoffRate: 5
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Communication
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Server
+                  - Lambda.Unknown
+                  - Lambda.ServiceException
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Lambda.TooManyRequestsException
+                IntervalSeconds: 5
+                BackoffRate: 20
+                MaxAttempts: 10
+            ResultPath: $.product_feed
+            TimeoutSeconds: 10
+            End: true
+      - StartAt: Populate Product Layout Feed
+        States:
+          Populate Product Layout Feed:
+            Comment: Populate product layout feed for specific product
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ProductLayoutFeedPopulateFunction}
+              Payload:
+                pathParameters:
+                  sku.$: $.sku
+                  action.$: $.action
+                headers:
+                  errors_aware: 'true'
+            Retry:
+              - ErrorEquals:
+                  - ApiCall
+                  - ApiGeneral
+                IntervalSeconds: 3
+                BackoffRate: 5
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Communication
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Server
+                  - Lambda.Unknown
+                  - Lambda.ServiceException
+                IntervalSeconds: 5
+                BackoffRate: 10
+                MaxAttempts: 3
+              - ErrorEquals:
+                  - Lambda.TooManyRequestsException
+                IntervalSeconds: 5
+                BackoffRate: 20
+                MaxAttempts: 10
+            ResultPath: $.product_layout_feed
+            TimeoutSeconds: 10
+            End: true

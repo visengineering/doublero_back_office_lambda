@@ -1,0 +1,1369 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: This serverless app sets up an AWS CodePipeline Pipeline as a CD solution for a GitHub-based SAM project.
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: !Sub '${ApplicationName}-CI-CD'
+    Description: >-
+      AWS CodePipeline Pipeline as a CD solution.
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'General'
+        Parameters:
+          - ApplicationName
+          - ApplicationURLName
+      - Label:
+          default: 'Source'
+        Parameters:
+          - GitHubOwner
+          - ServiceGitHubRepo
+          - ServiceGitHubBranch
+      - Label:
+          default: 'Build'
+        Parameters:
+          - ServiceComputeType
+      - Label:
+          default: 'Deploy'
+        Parameters:
+          - DeployStackName
+          - Stage
+          - EnableTracing
+      - Label:
+          default: 'DNS'
+        Parameters:
+          - DomainName
+          - ApiSubdomain
+          - HostedZoneId
+          - USAcmCertificateArn
+          - CorsOrigin
+      - Label:
+          default: 'Auth'
+        Parameters:
+          - CognitoUserPoolArn
+      - Label:
+          default: 'Notifications'
+        Parameters:
+          - NotificationEmail
+      - Label:
+          default: 'Jira'
+        Parameters:
+          - JiraProject
+          - JiraHost
+          - JiraUser
+          - JiraUserToken
+      - Label:
+          default: 'BI'
+        Parameters:
+          - BIDataBaseHost
+          - BIDataBasePort
+          - BIDataBaseUser
+          - BIDataBasePass
+          - BIDataBaseDBName
+      - Label:
+          default: 'Environment'
+        Parameters:
+          - DBAccessURL
+          - AlgoliaAppId
+          - AlgoliaApiKey
+          - ShopifyShopName
+          - ShopifyApiKey
+          - ShopifyApiPassword
+          - ShopifyWorkersCount
+          - ShoppingFeedApiKey
+          - ProductFeedApiKey
+          - CFPublicSignKeyId
+          - CFPrivateSignKey
+      - Label:
+          default: 'Content'
+        Parameters:
+          - ContentBucket
+          - ContentCDN
+    ParameterLabels:
+      ApplicationName:
+        default: 'Application Name'
+      ApplicationURLName:
+        default: 'URL Friendly Application Name'
+
+      ServiceComputeType:
+        default: 'Service Build Instance Type'
+
+      GitHubOwner:
+        default: 'GitHub Owner'
+      ServiceGitHubRepo:
+        default: 'GitHub Service Repo Name'
+      ServiceGitHubBranch:
+        default: 'GitHub Service Repo Branch'
+
+      JiraProject:
+        default: 'Jira Project'
+      JiraHost:
+        default: 'Jira Host'
+      JiraUser:
+        default: 'Jira User'
+      JiraUserToken:
+        default: 'Jira User Token'
+
+      NotificationEmail:
+        default: 'Pipeline updates Notification Email'
+
+      DeployStackName:
+        default: 'Deploy CF Stack Name'
+
+      ApiSubdomain:
+        default: 'Api Subdomain'
+
+      DomainName:
+        default: 'Domain DNS Name'
+      CorsOrigin:
+        default: 'CORS Allowed Origin'
+      HostedZoneId:
+        default: 'Route53 Hosted Zone Id'
+      USAcmCertificateArn:
+        default: 'SLL Certificate Arn (in us-east-1)'
+
+      EnableTracing:
+        default: 'Should Service Tracing Be Enabled'
+
+      CognitoUserPoolArn:
+        default: 'Cognito User Pool ARN'
+
+      DBAccessURL:
+        default: 'Service DB Access URL'
+
+      AlgoliaAppId:
+        default: 'Algolia Application Id'
+      AlgoliaApiKey:
+        default: 'Algolia API Key'
+
+      ShopifyShopName:
+        default: 'Shopify Shop Name'
+      ShopifyApiKey:
+        default: 'Shopify API Key'
+      ShopifyApiPassword:
+        default: 'Shopify API Password'
+      ShopifyWorkersCount:
+        default: 'Max Update Shopify Workers Count'
+
+      ShoppingFeedApiKey:
+        default: 'Shopping Feed API Key'
+      ProductFeedApiKey:
+        default: 'Product Feed API Key'
+
+      CFPublicSignKeyId:
+        default: 'CloudFront Public Sign Key Id'
+      CFPrivateSignKey:
+        default: 'CloudFront Private Sign Key'
+
+      ContentBucket:
+        default: 'Content Bucket'
+      ContentCDN:
+        default: 'Content CDN Domain'
+
+      BIDataBaseHost:
+        default: 'BI DB Host'
+      BIDataBasePort:
+        default: 'BI DB Port'
+      BIDataBaseUser:
+        default: 'BI DB User'
+      BIDataBasePass:
+        default: 'BI DB Pass'
+      BIDataBaseDBName:
+        default: 'BI DB name'
+Parameters:
+  ApplicationName:
+    Type: String
+    MinLength: 2
+    MaxLength: 15
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name
+  ApplicationURLName:
+    Type: String
+    MinLength: 2
+    MaxLength: 20
+    AllowedPattern: '^[a-z\-]+$'
+    Description: Application name that resources for which are provisioned
+    ConstraintDescription: Enter a valid application name that can be used in URLs (only lowercase letters and dash, 20 chars max)
+
+  ServiceComputeType:
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Default: BUILD_GENERAL1_SMALL
+    Description: AWS CodeBuild project compute type.
+    Type: String
+
+  GitHubOwner:
+    Description: GitHub username owning the repo
+    Type: String
+  ServiceGitHubRepo:
+    Description: GitHub Service repo name
+    Type: String
+  ServiceGitHubBranch:
+    Description: GitHub Service repo branch name
+    Type: String
+    Default: master
+
+  JiraProject:
+    Description: Jira project ID that needs to be updated with labels and fix versions
+    Type: String
+    MinLength: 2
+    MaxLength: 5
+    AllowedPattern: ([A-Z]+)
+  JiraHost:
+    Description: Jira Cloud host name
+    Type: String
+    MinLength: 5
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+  JiraUser:
+    Description: Jira user name (email) of a user that will be making updates
+    Type: String
+    MinLength: 5
+    AllowedPattern: ([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)
+    ConstraintDescription: Must be a valid email address
+  JiraUserToken:
+    Description: Jira user access token of a user that will be making updates
+    Type: String
+    MinLength: 5
+    NoEcho: true
+
+  NotificationEmail:
+    Description: Email address for SNS notifications on updates
+    Type: String
+    AllowedPattern: ([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)
+    ConstraintDescription: Must be a valid email address
+
+  DeployStackName:
+    Description: The stack name for the deploy stage
+    Type: String
+    Default: ''
+
+  ApiSubdomain:
+    Type: String
+    Description: Api subdomain prefix (e.g. api.)
+    Default: 'api.'
+
+  DomainName:
+    Type: String
+    MinLength: 5
+    Description: Top-level domain for deployment (e.g. example.com)
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+  CorsOrigin:
+    Type: String
+    Default: '*'
+    MinLength: 1
+    Description: Allowed origin (or several, separated by comma) that should be allowed by CORS (e.g. https://example.com)
+  Stage:
+    Type: String
+    Description: The stage where the application is running in, e.g., dev, prod.
+    Default: 'dev'
+  HostedZoneId:
+    Description: An Amazon Route 53 hosted zone ID (e.g. Z23YXV4OVPL04A)
+    Type: AWS::Route53::HostedZone::Id
+  USAcmCertificateArn:
+    Type: String
+    MinLength: 10
+    Description: ARN of the ACM certificate (CloudFront only supports ACM certificates in the US East (N. Virginia) Region (us-east-1)).
+
+  EnableTracing:
+    Type: String
+    Description: Should X-Ray tracing be used for this application
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'true'
+
+  CognitoUserPoolArn:
+    Type: String
+    Description: CognitoUser Pool ARN
+
+  DBAccessURL:
+    Type: String
+    Description: Service DB access URL
+    NoEcho: true
+    MinLength: 10
+
+  AlgoliaAppId:
+    Type: String
+    Description: Application ID is what Algolia uses to identify your app, where all your indices live
+    MinLength: 10
+    MaxLength: 10
+    AllowedPattern: '^[a-zA-Z0-9]+$'
+  AlgoliaApiKey:
+    Type: String
+    Description: Algolia Admin key to interract with application
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+
+  ShopifyShopName:
+    Type: String
+    Description: Shopify shop name
+    MinLength: 2
+    MaxLength: 32
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ShopifyApiKey:
+    Type: String
+    Description: Shopify API key
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ShopifyApiPassword:
+    Type: String
+    Description: Shopify API password
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-_]+$'
+  ShopifyWorkersCount:
+    Type: Number
+    MinValue: 1
+    MaxValue: 100
+    Default: 10
+    Description: The max number of parallel executors for Shopify updater
+
+  ShoppingFeedApiKey:
+    Type: String
+    Description: Shopping Feed API key
+    NoEcho: true
+    MinLength: 20
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+  ProductFeedApiKey:
+    Type: String
+    Description: Product Feed API key
+    NoEcho: true
+    MinLength: 20
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9\-]+$'
+
+  CFPublicSignKeyId:
+    Type: String
+    Description: CloudFront Public sign key Id
+    MinLength: 10
+    MaxLength: 20
+  CFPrivateSignKey:
+    Type: String
+    Description: CloudFront Private sign key
+    NoEcho: true
+    MinLength: 10
+
+  ContentBucket:
+    Type: String
+    MinLength: 2
+    Description: Content Bucket to hold user specific content
+  ContentCDN:
+    Type: String
+    MinLength: 2
+    Description: Content CDN domain
+    AllowedPattern: '(?=^.{1,254}$)(^(?:(?!\d+\.)[a-zA-Z0-9_\-]{1,63}\.?)+(?:[a-zA-Z]{2,})$)'
+    ConstraintDescription: Should be a valid domain name
+
+  BIDataBaseHost:
+    Type: String
+    Description: BI DataBase host
+  BIDataBasePort:
+    Type: Number
+    Description: BI DataBase port
+    Default: 5432
+  BIDataBaseUser:
+    Type: String
+    Description: BI DataBase user
+  BIDataBasePass:
+    Type: String
+    NoEcho: true
+    Description: BI DataBase pass
+  BIDataBaseDBName:
+    Type: String
+    NoEcho: true
+    Description: BI DataBase DB name
+Conditions:
+  ManualApproveNeeded: !Equals [ !Ref Stage, 'prod' ]
+  CreateServicePipeline: !Not [ !Equals [ !Ref DeployStackName, '' ] ]
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'ci-pipeline-${ApplicationURLName}-${AWS::Region}-${Stage}'
+      AccessControl: BucketOwnerFullControl
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 30
+            Status: Enabled
+
+  PipelineUpdatesSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ApplicationName}-${Stage}-pipeline-updates'
+      DisplayName: !Sub '${ApplicationName} - Build Update'
+      Subscription:
+        - Endpoint:
+            Ref: NotificationEmail
+          Protocol: email
+  PipelineUpdatesSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCodeStarNotificationsPublish
+            Effect: Allow
+            Principal:
+              Service:
+                - codestar-notifications.amazonaws.com
+            Action:
+              - SNS:Publish
+            Resource: !Ref PipelineUpdatesSNSTopic
+      Topics:
+        - !Ref PipelineUpdatesSNSTopic
+
+  PipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub pipeline-access-${AWS::StackName}
+      Roles:
+        - !Ref ServicePipelineRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ArtifactBucketObjectsAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub ${ArtifactBucket.Arn}/*
+          - Sid: ArtifactBucketListAccess
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+          - Sid: SNSAccess
+            Effect: Allow
+            Action:
+              - SNS:Publish
+            Resource: !Ref PipelineUpdatesSNSTopic
+  ServicePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ServicePipelineRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codepipeline.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName: build-resources-access
+          PolicyDocument:
+            Statement:
+              - Sid: CodeBuildAccess
+                Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - !GetAtt ServiceBuildProject.Arn
+                  - !GetAtt ServiceMigrationsBuildProject.Arn
+              - Sid: DeployCloudFormationAccess
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DeleteChangeSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${DeployStackName}/*
+              - Sid: PassRoleAccess
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ServiceDeployRole}
+              - Sid: CodestarConnectionAccess
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource:
+                  - !Sub '{{resolve:ssm:/applications/build/${AWS::Region}/github/connection}}'
+              - Sid: LambdaAccess
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+  CloudFormationDeployPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref ServiceDeployRole
+      PolicyName: !Sub 'deploy-create-delete-access-${AWS::StackName}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Action:
+              - cloudformation:CreateChangeSet
+            Resource:
+              - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Include
+          - Effect: 'Allow'
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:TagRole
+              - iam:PutRolePolicy
+              - iam:GetRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PassRole
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+          - Effect: 'Allow'
+            Action:
+              - iam:CreateServiceLinkedRole
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/ops.apigateway.amazonaws.com/AWSServiceRoleForAPIGateway'
+          - Effect: 'Allow'
+            Action:
+              - apigateway:*
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/*'
+          - Effect: 'Allow'
+            Action:
+              - apigateway:PUT
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*'
+          - Effect: 'Allow'
+            Action:
+              - apigateway:POST
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis'
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/domainnames'
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/domainnames/*'
+          - Effect: 'Allow'
+            Action:
+              - apigateway:PATCH
+              - apigateway:GET
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/account'
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/domainnames/*'
+          - Effect: 'Allow'
+            Action:
+              - apigateway:DELETE
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}::/domainnames/*'
+          - Effect: 'Allow'
+            Action:
+              - codedeploy:CreateApplication
+              - codedeploy:DeleteApplication
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:application:*'
+          - Effect: 'Allow'
+            Action:
+              - codedeploy:CreateDeploymentGroup
+              - codedeploy:DeleteDeploymentGroup
+              - codedeploy:CreateDeployment
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:*'
+          - Effect: 'Allow'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:CreateGrant
+              - kms:DescribeKey
+              - kms:GenerateDataKey
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:aliases/aws/lambda'
+          - Effect: 'Allow'
+            Action:
+              - kms:CreateKey
+            Resource:
+              - '*'
+          - Effect: 'Allow'
+            Action:
+              - kms:PutKeyPolicy
+              - kms:DescribeKey
+              - kms:ScheduleKeyDeletion
+              - kms:EnableKeyRotation
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:ListResourceTags
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+          - Effect: 'Allow'
+            Action:
+              - lambda:CreateFunction
+              - lambda:GetFunctionConfiguration
+              - lambda:GetFunction
+              - lambda:DeleteFunction
+              - lambda:CreateAlias
+              - lambda:GetAlias
+              - lambda:DeleteAlias
+              - lambda:PublishVersion
+              - lambda:ListVersionsByFunction
+              - lambda:AddPermission
+              - lambda:RemovePermission
+              - lambda:InvokeFunction
+              - lambda:UpdateFunctionEventInvokeConfig
+              - lambda:PutFunctionConcurrency
+              - lambda:DeleteFunctionConcurrency
+              - lambda:PutFunctionEventInvokeConfig
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+          - Effect: 'Allow'
+            Action:
+              - lambda:GetLayerVersion
+              - lambda:PublishLayerVersion
+              - lambda:DeleteLayerVersion
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:*'
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:*:*'
+          - Effect: 'Allow'
+            Action:
+              - lambda:ListLayerVersions
+              - lambda:ListLayers
+              - lambda:GetEventSourceMapping
+              - lambda:CreateEventSourceMapping
+              - lambda:DeleteEventSourceMapping
+              - lambda:DeleteFunctionEventInvokeConfig
+            Resource:
+              - '*'
+          - Effect: 'Allow'
+            Action:
+              - lambda:UpdateEventSourceMapping
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*'
+          - Effect: 'Allow'
+            Action:
+              - logs:DescribeLogGroups
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Effect: 'Allow'
+            Action:
+              - logs:CreateLogGroup
+              - logs:DescribeLogGroups
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Effect: 'Allow'
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/applications/*'
+          - Effect: 'Allow'
+            Action:
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:DeleteAlarms
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*'
+          - Effect: 'Allow'
+            Action:
+              - route53:GetHostedZone
+              - route53:ChangeResourceRecordSets
+              - route53:ListResourceRecordSets
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId}'
+          - Effect: 'Allow'
+            Action:
+              - route53:GetChange
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:route53:::change/*'
+          - Effect: 'Allow'
+            Action:
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutLifecycleConfiguration
+              - s3:PutBucketPolicy
+              - s3:PutBucketCORS
+              - s3:CreateBucket
+              - s3:DeleteBucketPolicy
+              - s3:DeleteBucket
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::*'
+          - Effect: 'Allow'
+            Action:
+              - cloudfront:GetDistribution
+              - cloudfront:GetDistributionConfig
+              - cloudfront:UpdateDistribution
+              - cloudfront:CreateDistribution
+              - cloudfront:DeleteDistribution
+              - cloudfront:TagResource
+              - cloudfront:UntagResource
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*'
+          - Effect: 'Allow'
+            Action:
+              - cloudfront:CreatePublicKey
+              - cloudfront:UpdateKeyGroup
+              - cloudfront:DeleteKeyGroup
+              - cloudfront:UpdatePublicKey
+              - cloudfront:GetKeyGroup
+              - cloudfront:GetPublicKeyConfig
+              - cloudfront:GetPublicKey
+              - cloudfront:GetKeyGroupConfig
+              - cloudfront:DeletePublicKey
+              - cloudfront:CreateKeyGroup
+              - cloudfront:GetCloudFrontOriginAccessIdentity
+              - cloudfront:GetCloudFrontOriginAccessIdentityConfig
+              - cloudfront:DeleteCloudFrontOriginAccessIdentity
+              - cloudfront:UpdateCloudFrontOriginAccessIdentity
+              - cloudfront:CreateCloudFrontOriginAccessIdentity
+            Resource:
+              - '*'
+          - Effect: 'Allow'
+            Action:
+              - acm:DescribeCertificate
+              - acm:GetCertificate
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:acm:${AWS::Region}:${AWS::AccountId}:certificate/*'
+          - Effect: 'Allow'
+            Action:
+              - sns:TagResource
+              - sns:GetTopicAttributes
+              - sns:DeleteTopic
+              - sns:CreateTopic
+              - sns:SetTopicAttributes
+              - sns:Subscribe
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:*'
+          - Effect: 'Allow'
+            Action:
+              - sns:ListTopics
+              - sns:ListSubscriptions
+              - sns:Unsubscribe
+            Resource:
+              - '*'
+          - Effect: 'Allow'
+            Action:
+              - sqs:TagQueue
+              - sqs:UntagQueue
+              - sqs:DeleteQueue
+              - sqs:GetQueueAttributes
+              - sqs:SetQueueAttributes
+              - sqs:ListQueueTags
+              - sqs:CreateQueue
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:*'
+          - Effect: 'Allow'
+            Action:
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:insight-rule/*'
+              - !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*'
+          - Effect: 'Allow'
+            Action:
+              - secretsmanager:DescribeSecret
+              - secretsmanager:CreateSecret
+              - secretsmanager:DeleteSecret
+              - secretsmanager:UpdateSecret
+              - secretsmanager:TagResource
+              - secretsmanager:UntagResource
+              - secretsmanager:GetSecretValue
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*'
+          - Effect: 'Allow'
+            Action:
+              - secretsmanager:GetRandomPassword
+            Resource:
+              - '*'
+          - Effect: 'Allow'
+            Action:
+              - events:TagResource
+              - events:DeleteRule
+              - events:PutTargets
+              - events:DescribeRule
+              - events:EnableRule
+              - events:PutRule
+              - events:RemoveTargets
+              - events:UntagResource
+              - events:DisableRule
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/*'
+              - !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/[*/]*'
+          - Effect: 'Allow'
+            Action:
+              - ec2:DescribeSubnets
+            Resource:
+              - '*'
+          - Sid: StepFunctionsManagement
+            Effect: 'Allow'
+            Action:
+              - states:DescribeStateMachine
+              - states:UpdateStateMachine
+              - states:DeleteStateMachine
+              - states:UntagResource
+              - states:TagResource
+              - states:CreateStateMachine
+              - states:ListTagsForResource
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*'
+          - Sid: StepFunctionsList
+            Effect: 'Allow'
+            Action:
+              - states:ListStateMachines
+            Resource: '*'
+          - Sid: DynamoDBAccess
+            Effect: 'Allow'
+            Action:
+              - dynamodb:DescribeTable
+              - dynamodb:DeleteTable
+              - dynamodb:CreateTable
+              - dynamodb:UpdateContinuousBackups
+              - dynamodb:DescribeContinuousBackups
+              - dynamodb:UpdateTimeToLive
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:TagResource
+              - dynamodb:ListTagsOfResource
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+          - Sid: RDSAccess
+            Effect: Allow
+            Action:
+              - rds:*
+            Resource: '*'
+  # This role is used to deploy to CloudFormation. In addition to the permissions from CloudFormationDeployPolicy,
+  # it also defines permissions that is required to update the stack in CloudFormation
+  ServiceDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ServiceDeployRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'cloudformation.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'artifact-bucket-access'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub '${ArtifactBucket.Arn}/*'
+        - PolicyName: 'iam-instance-profile'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:ListInstanceProfilesForRole
+                  - iam:GetInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:ListInstanceProfileTags
+                  - iam:ListInstanceProfiles
+                  - iam:UntagInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:TagInstanceProfile
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*'
+        - PolicyName: 'codedeploy-update-access'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - codedeploy:UpdateApplication
+                  - codedeploy:RegisterApplicationRevision
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:application:*'
+              - Effect: 'Allow'
+                Action:
+                  - codedeploy:UpdateDeploymentGroup
+                  - codedeploy:GetDeployment
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:*'
+              - Effect: "Allow"
+                Action:
+                  - codedeploy:GetDeploymentConfig
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:CodeDeployDefault.Lambda*'
+        - PolicyName: 'lambda-update-access'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateAlias
+                  - lambda:ListTags
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+
+  ServicePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateServicePipeline
+    DependsOn:
+      - PipelinePolicy
+    Properties:
+      Name: !Sub '${ApplicationName}-Service'
+      ArtifactStore:
+        Location: !Ref ArtifactBucket
+        Type: S3
+      RoleArn: !GetAtt ServicePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              Namespace: 'SourceVariables'
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ConnectionArn: !Sub '{{resolve:ssm:/applications/build/${AWS::Region}/github/connection}}'
+                BranchName: !Ref ServiceGitHubBranch
+                FullRepositoryId: !Sub '${GitHubOwner}/${ServiceGitHubRepo}'
+                OutputArtifactFormat: CODEBUILD_CLONE_REF
+                DetectChanges: true
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              Namespace: 'BuildVariables'
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ServiceBuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+                - Name: ChangeLog
+        - !If
+          - ManualApproveNeeded
+          - Name: Approval
+            Actions:
+              - Name: ManualApprove
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Version: '1'
+                  Provider: Manual
+                InputArtifacts: [ ]
+                OutputArtifacts: [ ]
+                Configuration:
+                  NotificationArn: !Ref PipelineUpdatesSNSTopic
+                  CustomData: Approval or Reject deploying changes
+                RunOrder: 1
+          - !Ref AWS::NoValue
+        - Name: Deploy
+          Actions:
+            - Name: CreateChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ParameterOverrides:
+                  !Sub
+                  - |-
+                    {
+                      "ApplicationName": "${ApplicationName}",
+                      "ApplicationURLName": "${ApplicationURLName}",
+                      "DomainName": "${DomainName}",
+                      "ApiSubdomain": "${ApiSubdomain}",
+                      "Stage": "${Stage}",
+                      "NotificationEmail": "${NotificationEmail}",
+                      "EnableTracing": "${EnableTracing}",
+                      "HostedZoneId": "${HostedZoneId}",
+                      "DBAccessURL": "${DBAccessURL}",
+                      "AlgoliaAppId": "${AlgoliaAppId}",
+                      "AlgoliaApiKey": "${AlgoliaApiKey}",
+                      "ShopifyShopName": "${ShopifyShopName}",
+                      "ShopifyApiKey": "${ShopifyApiKey}",
+                      "ShopifyApiPassword": "${ShopifyApiPassword}",
+                      "ShopifyWorkersCount": "${ShopifyWorkersCount}",
+                      "ShoppingFeedApiKey": "${ShoppingFeedApiKey}",
+                      "ProductFeedApiKey": "${ProductFeedApiKey}"
+                    }
+                  - ApplicationName: !Ref ApplicationName
+                    ApplicationURLName: !Ref ApplicationURLName
+                    DomainName: !Ref DomainName
+                    ApiSubdomain: !Ref ApiSubdomain
+                    Stage: !Ref Stage
+                    NotificationEmail: !Ref NotificationEmail
+                    EnableTracing: !Ref EnableTracing
+                    HostedZoneId: !Ref HostedZoneId
+                    DBAccessURL: !Ref DBAccessURL
+                    AlgoliaAppId: !Ref AlgoliaAppId
+                    AlgoliaApiKey: !Ref AlgoliaApiKey
+                    ShopifyShopName: !Ref ShopifyShopName
+                    ShopifyApiKey: !Ref ShopifyApiKey
+                    ShopifyApiPassword: !Ref ShopifyApiPassword
+                    ShopifyWorkersCount: !Ref ShopifyWorkersCount
+                    ShoppingFeedApiKey: !Ref ShoppingFeedApiKey
+                    ProductFeedApiKey: !Ref ProductFeedApiKey
+                RoleArn: !GetAtt ServiceDeployRole.Arn
+                StackName: !Ref DeployStackName
+                TemplatePath: 'BuildArtifact::packaged-template.yaml'
+                ChangeSetName: !Sub 'a-${DeployStackName}-Deploy'
+              RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Ref DeployStackName
+                ChangeSetName: !Sub 'a-${DeployStackName}-Deploy'
+              RunOrder: 2
+            - Name: Migrations
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref ServiceMigrationsBuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 3
+            - Name: NotifyJira
+              InputArtifacts:
+                - Name: ChangeLog
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Version: '1'
+                Provider: Lambda
+              Configuration:
+                FunctionName: !Sub '{{resolve:ssm:/applications/build/${AWS::Region}/function/jira-revision}}'
+                UserParameters:
+                  !Sub
+                  - |-
+                    {
+                      "jira_label": "${Label}",
+                      "jira_project": "${JiraProject}",
+                      "jira_host": "${JiraHost}",
+                      "jira_user": "${JiraUser}",
+                      "jira_token": "${JiraUserToken}",
+                      "revision": "#{SourceVariables.CommitId}",
+                      "revision_file": "#{BuildVariables.REVISION_FILE}",
+                      "changelog_artifact": "#{BuildVariables.CHANGELOG_ARTIFACT}",
+                      "changelog_artifact_file": "#{BuildVariables.CHANGELOG_ARTIFACT_FILE}"
+                    }
+                  - Label: !Ref Stage
+                    JiraProject: !Ref JiraProject
+                    JiraHost: !Ref JiraHost
+                    JiraUser: !Ref JiraUser
+                    JiraUserToken: !Ref JiraUserToken
+              RunOrder: 4
+
+  ServicePipelineNotificationRule:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Condition: CreateServicePipeline
+    DependsOn:
+      - ServicePipeline
+    Properties:
+      DetailType: FULL
+      Status: ENABLED
+      EventTypeIds:
+        - codepipeline-pipeline-pipeline-execution-failed
+        - codepipeline-pipeline-pipeline-execution-canceled
+      Name: !Sub '${ApplicationName}-ServicePipeline-Notifications'
+      Resource: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${ServicePipeline}'
+      Targets:
+        - TargetType: SNS
+          TargetAddress: !Ref PipelineUpdatesSNSTopic
+        - TargetType: SNS
+          TargetAddress: !Sub '{{resolve:ssm:/applications/notifications/${AWS::Region}/chat/topic-arn}}'
+
+  ServiceBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ApplicationName}-Build'
+      ServiceRole: !GetAtt ServiceBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref ServiceBuildProjectLogsGroup
+          Status: ENABLED
+      Environment:
+        ComputeType: !Ref ServiceComputeType
+        Image: 'aws/codebuild/standard:5.0'
+        Type: LINUX_CONTAINER
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: REGION
+            Value: !Ref AWS::Region
+          - Name: BUILD_PROFILE
+            Value: !Ref Stage
+          - Name: PACKAGE_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: BUILD_BRANCH
+            Value: !Ref ServiceGitHubBranch
+          - Name: BUILD_SERVICE_NAME
+            Value: !Sub '${ApplicationName}'
+  ServiceBuildProjectLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub 'codebuild/${ApplicationURLName}'
+      RetentionInDays: 7
+
+  ServiceMigrationsBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ApplicationName}-Build-Migrations'
+      ServiceRole: !GetAtt ServiceMigrationsBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec-migrations.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref ServiceMigrationsBuildProjectLogsGroup
+          Status: ENABLED
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'aws/codebuild/standard:5.0'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: MONGO_URI
+            Value: !Ref DBAccessURL
+          - Name: BUILD_PROFILE
+            Value: !Ref Stage
+  ServiceMigrationsBuildProjectLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub 'codebuild/${ApplicationURLName}-migrations'
+      RetentionInDays: 7
+
+  CodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub codebuild-access-${AWS::StackName}
+      Roles:
+        - !Ref ServiceBuildProjectRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: 'Allow'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Effect: 'Allow'
+            Resource:
+              - !Sub '${ArtifactBucket.Arn}/*'
+          - Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+          - Sid: CodestarConnectionAccess
+            Effect: Allow
+            Action:
+              - codestar-connections:UseConnection
+            Resource:
+              - !Sub '{{resolve:ssm:/applications/build/${AWS::Region}/github/connection}}'
+  ServiceBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ServiceBuildProjectRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+        Version: '2012-10-17'
+      Path: /service-role/
+
+  MigrationsCodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub migrations-codebuild-access-${AWS::StackName}
+      Roles:
+        - !Ref ServiceMigrationsBuildProjectRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: 'Allow'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Effect: 'Allow'
+            Resource:
+              - !Sub '${ArtifactBucket.Arn}/*'
+          - Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+          - Sid: CodestarConnectionAccess
+            Effect: Allow
+            Action:
+              - codestar-connections:UseConnection
+            Resource:
+              - !Sub '{{resolve:ssm:/applications/build/${AWS::Region}/github/connection}}'
+  ServiceMigrationsBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ServiceMigrationsBuildProjectRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+        Version: '2012-10-17'
+      Path: /service-role/
+
+  CloudFrontKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Comment: !Sub 'Key group for CF sig keys for ${ApplicationURLName}'
+        Items:
+          - !Ref CFPublicSignKeyId
+        Name: !Sub '${ApplicationURLName}-cf-key-group'
+  CloudFrontKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-cf-sign-key-secret'
+      SecretString: !Sub '{"key_id": "${CFPublicSignKeyId}", "private_key": "${CFPrivateSignKey}"}'
+
+  CloudFrontKeyGroupParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-group'
+      Type: String
+      Value: !Ref CloudFrontKeyGroup
+  CloudFrontKeySecretParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/cloudfront/sign/key-secret'
+      Type: String
+      Value: !Ref CloudFrontKeySecret
+
+  BIAccessSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ApplicationURLName}-bi-access-secret'
+      SecretString: !Sub '{"host": "${BIDataBaseHost}", "username": "${BIDataBaseUser}", "password": "${BIDataBasePass}", "dbname": "${BIDataBaseDBName}", "port": ${BIDataBasePort}}'
+  BIAccessSecretParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/bi/access-secret'
+      Type: String
+      Value: !Ref BIAccessSecret
+
+  EnvUSAcmCertificateArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/config/env/USAcmCertificateArn'
+      Type: String
+      Value: !Ref USAcmCertificateArn
+
+  EnvCorsOriginParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/config/env/CorsOrigin'
+      Type: String
+      Value: !Ref CorsOrigin
+
+  EnvContentBucketParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/config/env/ContentBucket'
+      Type: String
+      Value: !Ref ContentBucket
+  EnvContentCDNParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/config/env/ContentCDN'
+      Type: String
+      Value: !Ref ContentCDN
+
+  CognitoPoolArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/applications/${ApplicationURLName}/${AWS::Region}/config/auth/CognitoPoolArn'
+      Type: String
+      Value: !Ref CognitoUserPoolArn

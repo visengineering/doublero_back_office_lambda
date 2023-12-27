@@ -1,0 +1,339 @@
+Comment: Product updates handling workflow
+StartAt: Load Product Updates
+States:
+  Load Product Updates:
+    Comment: Load product details/updates based on an update types/subtypes
+    Type: Task
+    Resource: arn:aws:states:::lambda:invoke
+    Parameters:
+      FunctionName: ${LoadProductUpdatesFunction}
+      Payload:
+        sku.$: $.sku
+        types.$: $.types
+        action.$: $.action
+        shopify_id.$: $.shopify_id
+        skip_shopify_update.$: $.skip_shopify_update
+        execution_id.$: $$.Execution.Id
+    Retry:
+      - ErrorEquals:
+          - ApiCall
+          - ApiGeneral
+        IntervalSeconds: 3
+        BackoffRate: 5
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Communication
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Server
+          - Lambda.Unknown
+          - Lambda.ServiceException
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 2
+    Catch:
+      - ErrorEquals:
+          - NotFound
+        ResultPath: $.error_info
+        Next: Report Product Not Found
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+    ResultSelector:
+      sku.$: $.Payload.sku
+      shopify_id.$: $.Payload.shopify_id
+      updates.$: $.Payload.updates
+      images.$: $.Payload.images
+    ResultPath: $.product
+    TimeoutSeconds: 30
+    Next: Upload Images
+  Upload Images:
+    Comment: Handled uploading prepared images
+    Type: Task
+    Resource: arn:aws:states:::lambda:invoke
+    Parameters:
+      FunctionName: ${UploadProductImagesFunction}
+      Payload:
+        images.$: $.product.images
+    Retry:
+      - ErrorEquals:
+          - ApiCall
+          - ApiGeneral
+        IntervalSeconds: 3
+        BackoffRate: 5
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Communication
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Lambda.TooManyRequestsException
+        IntervalSeconds: 5
+        BackoffRate: 15
+        MaxAttempts: 10
+      - ErrorEquals:
+          - Server
+          - Lambda.Unknown
+          - Lambda.ServiceException
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 3
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+    ResultPath: null
+    TimeoutSeconds: 120
+    Next: Update Shopify Async
+
+  Update Shopify Async:
+    Comment: Send message to the Shopify update queue and wait for the result
+    Type: Task
+    Resource: arn:aws:states:::sqs:sendMessage.waitForTaskToken
+    Parameters:
+      QueueUrl: ${ShopifyUpdatesQueue}
+      MessageBody:
+        sku.$: $.sku
+        shopify_id.$: $.product.shopify_id
+        updates.$: $.product.updates
+        action.$: $.action
+        skip_update.$: $.skip_shopify_update
+        execution_id.$: $$.Execution.Id
+        task_token.$: $$.Task.Token
+      MessageGroupId.$: $.sku
+    ResultPath: $.product.updates
+    # Retry is handled by SQS retries
+    Next: Update Algolia
+    HeartbeatSeconds: 172800
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+  Update Algolia:
+    Comment: Propagate product updates to Algolia
+    Type: Task
+    Resource: arn:aws:states:::lambda:invoke
+    Parameters:
+      FunctionName: ${UpdateAlgoliaFunction}
+      Payload:
+        product.$: $.product
+        action.$: $.action
+        execution_id.$: $$.Execution.Id
+    Retry:
+      - ErrorEquals:
+          - ApiCall
+          - ApiGeneral
+        IntervalSeconds: 3
+        BackoffRate: 5
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Communication
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Server
+          - Lambda.Unknown
+          - Lambda.ServiceException
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 2
+      - ErrorEquals:
+          - Lambda.TooManyRequestsException
+        IntervalSeconds: 5
+        BackoffRate: 20
+        MaxAttempts: 20
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+    ResultPath: null
+    TimeoutSeconds: 10
+    Next: Update Product Images
+  Update Product Images:
+    Comment: Save references to uploaded images into DB
+    Type: Task
+    Resource: arn:aws:states:::lambda:invoke
+    Parameters:
+      FunctionName: ${UpdateProductImagesFunction}
+      Payload:
+        sku.$: $.sku
+        updates.$: $.product.updates
+        execution_id.$: $$.Execution.Id
+        batch_id.$: $.batch_id
+    Retry:
+      - ErrorEquals:
+          - ApiCall
+          - ApiGeneral
+        IntervalSeconds: 3
+        BackoffRate: 5
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Communication
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 3
+      - ErrorEquals:
+          - Server
+          - Lambda.Unknown
+          - Lambda.ServiceException
+        IntervalSeconds: 5
+        BackoffRate: 10
+        MaxAttempts: 2
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+    ResultPath: null
+    TimeoutSeconds: 10
+    Next: Update Feeds
+  Update Feeds:
+    Comment: Start an execution of the Feeds Update Workflow and wait for its completion
+    Type: Task
+    Resource: arn:aws:states:::states:startExecution.sync
+    Parameters:
+      StateMachineArn: ${FeedsUpdateWorkflow}
+      Input:
+        NeedCallback: false
+        sku.$: $.sku
+        action.$: $.action
+    ResultPath: $.feeds_update
+    Retry:
+      - ErrorEquals:
+          - ApiCall
+          - ApiGeneral
+          - Communication
+        IntervalSeconds: 10
+        BackoffRate: 10
+        MaxAttempts: 2
+      - ErrorEquals:
+          - Server
+          - Lambda.Unknown
+          - Lambda.ServiceException
+          - Lambda.TooManyRequestsException
+        IntervalSeconds: 5
+        BackoffRate: 20
+        MaxAttempts: 3
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        ResultPath: $.error_info
+        Next: Handle Retry Attempt
+    End: true
+  Handle Retry Attempt:
+    Comment: Verifies that Attempt filed was passed as an input
+    Type: Choice
+    Choices:
+      - And:
+          - Variable: "$.attempt"
+            IsPresent: true
+          - Variable: "$.attempt"
+            NumericGreaterThanEquals: 3
+        Next: Report Update Failed After Retries
+    Default: Store Failed Event
+
+  Store Failed Event:
+    Comment: Store failed event in table so we can re-process it later
+    Type: Task
+    Resource: arn:aws:states:::dynamodb:putItem
+    Parameters:
+      TableName: ${ProductUpdatesTable}
+      Item:
+        id:
+          S.$: $.sku
+        execution_id:
+          S.$: $$.Execution.Id
+        started_at:
+          S.$: $$.Execution.StartTime
+        types:
+          S.$: States.JsonToString($.types)
+        skip_shopify_update:
+          BOOL.$: $.skip_shopify_update
+        batch_id:
+          S.$: $.batch_id
+        action:
+          S.$: $.action
+        shopify_id:
+          N.$: States.Format('{}', $.shopify_id)
+        attempt:
+          N.$: States.Format('{}', $.attempt)
+        error_info:
+          S.$: $.error_info.Error
+        error_cause:
+          S.$: $.error_info.Cause
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        Next: Report Update Failed
+    ResultPath: null
+    Next: Report Update Failed
+
+  Report Product Not Found:
+    Comment: Send notification that product was not found
+    Type: Task
+    Resource: arn:aws:states:::sns:publish
+    Parameters:
+      TopicArn: ${NotificationTopic}
+      Subject: Product Not Found
+      Message:
+        product_sku.$: $.sku
+        update_types.$: $.types
+        attempt.$: $.attempt
+        error.$: $.error_info.Error
+        cause.$: $.error_info.Cause
+        execution.$: $$.Execution
+        state_machine.$: $$.StateMachine
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        Next: Workflow Failed
+    Next: Workflow Failed
+  Report Update Failed:
+    Comment: Send notification that product update workflow has failed
+    Type: Task
+    Resource: arn:aws:states:::sns:publish
+    Parameters:
+      TopicArn: ${NotificationTopic}
+      Subject: Product Update Workflow Failed
+      Message:
+        error.$: $.error_info.Error
+        cause.$: $.error_info.Cause
+        execution.$: $$.Execution
+        state_machine.$: $$.StateMachine
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        Next: Workflow Failed
+    ResultPath: null
+    Next: Workflow Failed
+  Report Update Failed After Retries:
+    Comment: Send notification that product update workflow has failed (all retry attempts exhausted)
+    Type: Task
+    Resource: arn:aws:states:::sns:publish
+    Parameters:
+      TopicArn: ${NotificationTopic}
+      Subject: Product Update Workflow Failed (all retry attempts exhausted)
+      Message:
+        error.$: $.error_info.Error
+        cause.$: $.error_info.Cause
+        execution.$: $$.Execution
+        state_machine.$: $$.StateMachine
+    Catch:
+      - ErrorEquals:
+          - States.ALL
+        Next: Workflow Failed
+    ResultPath: null
+    Next: Workflow Failed
+
+  Workflow Failed:
+    Comment: Mark workflow as failed
+    Type: Fail
+    Cause: Workflow Failed and reported failure via notification

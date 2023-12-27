@@ -1,0 +1,30 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "[Dev] [Product Updater] Run",
+      "type": "node",
+      "request": "launch",
+      "args": ["../.vscode/run.ts"],
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "cwd": "${workspaceRoot}/product-updater",
+      "env": {
+        "BI_DB_ACCESS_SECRET": "back-office-jobs-bi-access-secret",
+        "ALGOLIA_SECRET": "back-office-jobs-algolia-secret",
+        "PRODUCT_INDEX": "product_catalog_dev",
+        "DB_ACCESS_SECRET": "arn:aws:secretsmanager:eu-central-1:582047652788:secret:back-office-jobs-db-access-secret-tdvZYE",
+        "SHOPIFY_SECRET": "arn:aws:secretsmanager:eu-central-1:582047652788:secret:back-office-jobs-shopify-secret-cqM3F5",
+        "ENVIRONMENT": "dev",
+        "AWS_REGION": "eu-central-1",
+        "AWS_ACCESS_KEY_ID": "",
+        "AWS_SECRET_ACCESS_KEY": "",
+        "AWS_SESSION_TOKEN": ""
+      },
+      "protocol": "inspector",
+      "internalConsoleOptions": "openOnSessionStart"
+    }
+  ]
+}

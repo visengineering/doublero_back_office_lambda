@@ -1,0 +1,44 @@
+{
+  "name": "utils",
+  "version": "1.0.0",
+  "description": "Jobs Utilities module",
+  "scripts": {
+    "build": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:dist",
+    "build:ci": "npm run build:init && npm run build:lint && npm run build:tsc && npm run build:shared && npm run build:dist && npm run build:dist:shared",
+    "build:shared": "rm -rf .shared && mkdir -p .shared/common-util && cp -R ../shared/common-util/dist/* .shared/common-util/",
+    "build:shared:common-util": "mkdir -p .shared/common-util && cp -R ../shared/common-util/dist/* .shared/common-util/",
+    "build:init": "npm run build:shared && rm -rf dist && mkdir -p dist && npm install",
+    "build:tsc": "tsc",
+    "build:lint": "eslint . --ext .ts",
+    "build:lint:staged": "lint-staged",
+    "build:copy": "cp -a package.json package-lock.json .shared dist/",
+    "build:dist": "npm run build:copy && cd dist && npm install --only=prod && rm -v package-lock.json",
+    "build:dist:shared-cleanup": "rm -rf dist/.shared && npm run build:shared && cp -a .shared dist/",
+    "build:dist:shared": "npm run build:dist:shared-cleanup && cd dist/.shared && ls -d */ | xargs -I {} bash -c 'echo ../node_modules/{}' | sed 's/\\///3' | xargs rm -rfv $1 && mv * ../node_modules && cd .. && rm -rf .shared"
+  },
+  "devDependencies": {
+    "common-util": "file:./.shared/common-util",
+    "@types/node": "^14.14.31",
+    "@typescript-eslint/eslint-plugin": "5.2.0",
+    "@typescript-eslint/parser": "5.2.0",
+    "eslint": "8.1.0",
+    "lint-staged": "12.1.2",
+    "typescript": "4.4.4"
+  },
+  "engines": {
+    "npm": ">=8.5.0",
+    "node": ">=14.17.2"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "npm run build:lint"
+    ]
+  },
+  "keywords": [],
+  "author": "Yuriy Dizhak",
+  "repository": {
+    "url": "https://github.com/double-ro/back-office-jobs.git",
+    "directory": "shared/common-util"
+  },
+  "license": "ISC"
+}
